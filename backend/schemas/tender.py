@@ -73,6 +73,9 @@ class TenderSearchRequest(BaseModel):
     bid_close_to: Optional[datetime] = None
     published_from: Optional[datetime] = None
     published_to: Optional[datetime] = None
+    closing_within: Optional[str] = None  # today, 3days, 7days, 30days
+    department: Optional[str] = None  # text search
+    category: Optional[str] = None  # text search
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
     sort_by: str = "publication_date"
@@ -107,3 +110,5 @@ class TenderStatsResponse(BaseModel):
     tenders_by_state: dict
     avg_tender_value: Optional[float] = None
     tenders_closing_this_week: int
+    tenders_by_department: Optional[dict] = None
+    tenders_by_organization: Optional[dict] = None

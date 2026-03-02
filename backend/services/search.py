@@ -25,6 +25,9 @@ async def search_tenders(
     bid_close_to: Optional[datetime] = None,
     published_from: Optional[datetime] = None,
     published_to: Optional[datetime] = None,
+    closing_within: Optional[str] = None,
+    department_search: Optional[str] = None,
+    category_search: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
     sort_by: str = "publication_date",
@@ -64,6 +67,23 @@ async def search_tenders(
         conditions.append(Tender.publication_date >= published_from)
     if published_to:
         conditions.append(Tender.publication_date <= published_to)
+
+    # Closing within filter
+    if closing_within:
+        from datetime import timedelta, timezone as tz
+        now = datetime.now(tz.utc)
+        delta_map = {"today": 1, "3days": 3, "7days": 7, "30days": 30}
+        days = delta_map.get(closing_within, 7)
+        conditions.append(Tender.bid_close_date >= now)
+        conditions.append(Tender.bid_close_date <= now + timedelta(days=days))
+
+    # Text search on department
+    if department_search:
+        conditions.append(Tender.department.ilike(f"%{department_search}%"))
+
+    # Text search on category
+    if category_search:
+        conditions.append(Tender.category.ilike(f"%{category_search}%"))
 
     where_clause = and_(*conditions) if conditions else True
 
@@ -120,6 +140,26 @@ async def get_tender_stats(db: AsyncSession) -> dict:
     )
     by_state = {row[0]: row[1] for row in state_q.all()}
 
+    # By department (top 20)
+    dept_q = await db.execute(
+        select(Tender.department, func.count(Tender.id))
+        .where(Tender.department.isnot(None))
+        .group_by(Tender.department)
+        .order_by(func.count(Tender.id).desc())
+        .limit(20)
+    )
+    by_department = {row[0]: row[1] for row in dept_q.all()}
+
+    # By organization (top 20)
+    org_q = await db.execute(
+        select(Tender.organization, func.count(Tender.id))
+        .where(Tender.organization.isnot(None))
+        .group_by(Tender.organization)
+        .order_by(func.count(Tender.id).desc())
+        .limit(20)
+    )
+    by_organization = {row[0]: row[1] for row in org_q.all()}
+
     # Closing this week
     closing_week = (await db.execute(
         select(func.count(Tender.id)).where(
@@ -139,4 +179,6 @@ async def get_tender_stats(db: AsyncSession) -> dict:
         "tenders_by_state": by_state,
         "avg_tender_value": float(avg_val) if avg_val else None,
         "tenders_closing_this_week": closing_week,
+        "tenders_by_department": by_department,
+        "tenders_by_organization": by_organization,
     }

@@ -17,8 +17,8 @@ export default function Layout() {
       {/* Sidebar */}
       <aside className="w-64 bg-primary-900 text-white flex flex-col">
         <div className="p-6 border-b border-white/10">
-          <h1 className="text-xl font-bold">🏛️ Tender Portal</h1>
-          <p className="text-sm text-white/60 mt-1">Government Tender Aggregator</p>
+          <h1 className="text-xl font-bold">🏛️ TenderWatch</h1>
+          <p className="text-sm text-white/60 mt-1">GeM Tender Aggregator</p>
         </div>
         <nav className="flex-1 p-4 space-y-1">
           {navItems.map(({ to, icon: Icon, label }) => (
