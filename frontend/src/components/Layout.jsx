@@ -1,10 +1,12 @@
 import { Outlet, NavLink } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { LayoutDashboard, Search, Bell, Shield, LogOut } from 'lucide-react'
+import { LayoutDashboard, Search, Bell, Shield, LogOut, Compass, Bookmark } from 'lucide-react'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/search', icon: Search, label: 'Search Tenders' },
+  { to: '/browse', icon: Compass, label: 'Browse' },
+  { to: '/bookmarks', icon: Bookmark, label: 'Bookmarks' },
   { to: '/alerts', icon: Bell, label: 'Alerts' },
   { to: '/admin', icon: Shield, label: 'Admin' },
 ]
@@ -18,7 +20,7 @@ export default function Layout() {
       <aside className="w-64 bg-primary-900 text-white flex flex-col">
         <div className="p-6 border-b border-white/10">
           <h1 className="text-xl font-bold">🏛️ TenderWatch</h1>
-          <p className="text-sm text-white/60 mt-1">GeM Tender Aggregator</p>
+          <p className="text-sm text-white/60 mt-1">Government Tender Aggregator</p>
         </div>
         <nav className="flex-1 p-4 space-y-1">
           {navItems.map(({ to, icon: Icon, label }) => (

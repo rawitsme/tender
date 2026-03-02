@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Calendar, MapPin, Building2, FileText, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Calendar, MapPin, Building2, FileText, ExternalLink, Bookmark, Share2, Copy, Check } from 'lucide-react'
 import { format } from 'date-fns'
 import api from '../api/client'
 
@@ -8,13 +8,32 @@ export default function TenderDetail() {
   const { id } = useParams()
   const [tender, setTender] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [bookmarked, setBookmarked] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     api.get(`/tenders/${id}`)
       .then(r => setTender(r.data))
       .catch(console.error)
       .finally(() => setLoading(false))
+    api.get('/bookmarks/ids')
+      .then(r => setBookmarked(r.data.includes(id)))
+      .catch(() => {})
   }, [id])
+
+  const toggleBookmark = async () => {
+    try {
+      if (bookmarked) { await api.delete(`/bookmarks/${id}`) }
+      else { await api.post(`/bookmarks/${id}`) }
+      setBookmarked(!bookmarked)
+    } catch (err) { console.error(err) }
+  }
+
+  const shareLink = () => {
+    navigator.clipboard.writeText(window.location.href)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>
   if (!tender) return <div className="text-center py-12 text-red-500">Tender not found</div>
@@ -39,12 +58,36 @@ export default function TenderDetail() {
         </div>
         <h1 className="text-xl font-bold text-gray-900 mb-2">{tender.title}</h1>
         {tender.tender_id && <p className="text-sm text-gray-500">NIT/Ref: {tender.tender_id}</p>}
-        {tender.source_url && (
-          <a href={tender.source_url} target="_blank" rel="noopener"
-            className="inline-flex items-center gap-1 text-sm text-primary-600 hover:underline mt-2">
-            <ExternalLink size={14} /> View on source
-          </a>
+        {/* Organization Chain */}
+        {tender.organization && tender.organization.includes('||') && (
+          <div className="flex flex-wrap gap-1 mt-3">
+            {tender.organization.split('||').map((part, i) => (
+              <span key={i} className="inline-flex items-center">
+                {i > 0 && <span className="text-gray-400 mx-1">→</span>}
+                <span className="px-2 py-0.5 bg-gray-100 rounded text-xs text-gray-700">{part.trim()}</span>
+              </span>
+            ))}
+          </div>
         )}
+        <div className="flex items-center gap-3 mt-3">
+          {tender.source_url && (
+            <a href={tender.source_url} target="_blank" rel="noopener"
+              className="inline-flex items-center gap-1 text-sm text-primary-600 hover:underline">
+              <ExternalLink size={14} /> View on source portal
+            </a>
+          )}
+          <button onClick={toggleBookmark}
+            className={`inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+              bookmarked ? 'bg-primary-50 border-primary-300 text-primary-700' : 'hover:bg-gray-50'
+            }`}>
+            <Bookmark size={14} className={bookmarked ? 'fill-primary-600' : ''} />
+            {bookmarked ? 'Bookmarked' : 'Bookmark'}
+          </button>
+          <button onClick={shareLink}
+            className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg border hover:bg-gray-50">
+            {copied ? <><Check size={14} className="text-green-600" /> Copied!</> : <><Copy size={14} /> Share Link</>}
+          </button>
+        </div>
       </div>
 
       {/* Key Details */}

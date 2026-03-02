@@ -5,6 +5,8 @@ import Dashboard from './pages/Dashboard'
 import TenderSearch from './pages/TenderSearch'
 import TenderDetail from './pages/TenderDetail'
 import Alerts from './pages/Alerts'
+import Browse from './pages/Browse'
+import Bookmarks from './pages/Bookmarks'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
 
@@ -23,6 +25,8 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="search" element={<TenderSearch />} />
           <Route path="tenders/:id" element={<TenderDetail />} />
+          <Route path="browse" element={<Browse />} />
+          <Route path="bookmarks" element={<Bookmarks />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="admin" element={<Admin />} />
         </Route>

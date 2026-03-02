@@ -6,7 +6,7 @@ export default function Alerts() {
   const [searches, setSearches] = useState([])
   const [alerts, setAlerts] = useState([])
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ name: '', keywords: '', states: [], channels: ['email'] })
+  const [form, setForm] = useState({ name: '', keywords: '', states: [], channels: ['email'], frequency: 'instant' })
 
   useEffect(() => {
     api.get('/alerts/searches').then(r => setSearches(r.data)).catch(console.error)
@@ -58,6 +58,31 @@ export default function Alerts() {
           <input placeholder="Keywords (e.g. road construction bridge)"
             value={form.keywords} onChange={e => setForm({ ...form, keywords: e.target.value })}
             className="w-full px-3 py-2 border rounded-lg text-sm" />
+          <div>
+            <label className="text-xs font-medium text-gray-500 uppercase">Notify via</label>
+            <div className="flex gap-2 mt-1.5">
+              {['email', 'whatsapp', 'sms'].map(ch => (
+                <button key={ch}
+                  onClick={() => {
+                    const chs = form.channels.includes(ch) ? form.channels.filter(c => c !== ch) : [...form.channels, ch]
+                    setForm({ ...form, channels: chs })
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${
+                    form.channels.includes(ch) ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >{ch === 'whatsapp' ? '📱 WhatsApp' : ch === 'email' ? '📧 Email' : '💬 SMS'}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-500 uppercase">Frequency</label>
+            <select value={form.frequency} onChange={e => setForm({ ...form, frequency: e.target.value })}
+              className="w-full mt-1.5 px-3 py-2 border rounded-lg text-sm">
+              <option value="instant">Instant</option>
+              <option value="daily">Daily Digest</option>
+              <option value="weekly">Weekly Summary</option>
+            </select>
+          </div>
           <div className="flex gap-2">
             <button onClick={createSearch} className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm">Save</button>
             <button onClick={() => setShowCreate(false)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>

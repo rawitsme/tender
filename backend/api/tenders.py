@@ -80,6 +80,34 @@ async def stats(db: AsyncSession = Depends(get_db)):
     return await get_tender_stats(db)
 
 
+@router.get("/browse/facets")
+async def browse_facets(db: AsyncSession = Depends(get_db)):
+    """Get counts by source, state, department for browse page."""
+    from sqlalchemy import text
+    
+    by_source = {}
+    result = await db.execute(text("SELECT source, COUNT(*) FROM tenders GROUP BY source ORDER BY count DESC"))
+    for row in result.fetchall():
+        by_source[row[0]] = row[1]
+    
+    by_state = {}
+    result = await db.execute(text("SELECT state, COUNT(*) FROM tenders WHERE state != '' GROUP BY state ORDER BY count DESC LIMIT 20"))
+    for row in result.fetchall():
+        by_state[row[0]] = row[1]
+    
+    by_dept = {}
+    result = await db.execute(text("SELECT department, COUNT(*) FROM tenders WHERE department != '' GROUP BY department ORDER BY count DESC LIMIT 20"))
+    for row in result.fetchall():
+        by_dept[row[0]] = row[1]
+    
+    by_org = {}
+    result = await db.execute(text("SELECT organization, COUNT(*) FROM tenders WHERE organization != '' GROUP BY organization ORDER BY count DESC LIMIT 20"))
+    for row in result.fetchall():
+        by_org[row[0]] = row[1]
+    
+    return {"by_source": by_source, "by_state": by_state, "by_department": by_dept, "by_organization": by_org}
+
+
 @router.get("/{tender_id}", response_model=TenderDetailResponse)
 async def get_tender(tender_id: UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
