@@ -1,7 +1,7 @@
 """NIC eProcurement state portal Selenium connector.
 
 Handles CAPTCHA-protected state tender portals (UP, Maharashtra, Uttarakhand, Haryana, MP).
-All share similar NIC eProcurement structure.
+All share similar NIC eProcurement structure with id='table' class='list_table'.
 """
 
 import base64
@@ -61,7 +61,7 @@ def _get_driver():
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
 
 
-def _get_captcha_bytes(driver) -> bytes | None:
+def _get_captcha_bytes(driver) -> Optional[bytes]:
     try:
         captcha_el = driver.find_element(By.ID, "captchaImage")
         src = captcha_el.get_attribute("src")
@@ -106,7 +106,12 @@ def _solve_captcha(driver, max_attempts=5) -> bool:
         time.sleep(3)
 
         page = driver.page_source
-        if "e-Published Date" in page or "Closing Date" in page or "Tender Title" in page:
+        # Reject false positives — "Invalid Captcha" means it failed
+        if "Invalid Captcha" in page or "Incorrect Captcha" in page:
+            logger.debug(f"CAPTCHA attempt {attempt+1}: rejected by server")
+            continue
+        # Check for actual tender results
+        if "Organisation Chain" in page or "Total records:" in page or "e-Published Date" in page:
             logger.info(f"CAPTCHA solved on attempt {attempt+1}")
             return True
 
@@ -146,26 +151,32 @@ class NICSeleniumConnector(BaseConnector):
             time.sleep(3)
 
             if not _solve_captcha(driver):
-                logger.error(f"{self.state_key}: Failed to solve CAPTCHA")
+                logger.error(f"{self.state_key}: Failed to solve CAPTCHA after all attempts")
                 return []
 
-            tenders = self._parse_table(driver)
-            logger.info(f"{self.state_key}: Parsed {len(tenders)} tenders")
+            tenders = self._parse_tender_table(driver)
+            logger.info(f"{self.state_key}: Parsed {len(tenders)} tenders from page 1")
 
-            # Pagination
-            try:
-                page_count = 1
-                while page_count < 3:
-                    next_links = driver.find_elements(By.LINK_TEXT, "Next")
+            # Pagination — click Next
+            page_count = 1
+            while page_count < 5:
+                try:
+                    next_links = driver.find_elements(By.LINK_TEXT, "Next >")
+                    if not next_links:
+                        next_links = driver.find_elements(By.LINK_TEXT, "Next")
                     if not next_links:
                         break
                     next_links[0].click()
                     time.sleep(3)
-                    batch = self._parse_table(driver)
+                    batch = self._parse_tender_table(driver)
+                    if not batch:
+                        break
                     tenders.extend(batch)
                     page_count += 1
-            except Exception as e:
-                logger.debug(f"{self.state_key} pagination: {e}")
+                    logger.info(f"{self.state_key}: Page {page_count+1}: +{len(batch)} tenders")
+                except Exception as e:
+                    logger.debug(f"{self.state_key} pagination: {e}")
+                    break
 
         except Exception as e:
             logger.error(f"{self.state_key} Selenium failed: {e}")
@@ -175,86 +186,94 @@ class NICSeleniumConnector(BaseConnector):
 
         return tenders
 
-    def _parse_table(self, driver) -> List[RawTender]:
+    def _parse_tender_table(self, driver) -> List[RawTender]:
+        """Parse the actual tender data table (id='table', class='list_table' with 7 cols)."""
         tenders = []
         state = self.config["state"]
+        base_url = self.config["base_url"]
 
         try:
-            tables = driver.find_elements(By.TAG_NAME, "table")
-            for table in tables:
-                rows = table.find_elements(By.TAG_NAME, "tr")
-                if len(rows) < 3:
-                    continue
+            # Target the specific tender results table
+            # NIC portals use id="table" class="list_table" for the results
+            target_table = None
+            
+            # Try by ID first
+            try:
+                target_table = driver.find_element(By.ID, "table")
+            except Exception:
+                pass
+            
+            # Fallback: find list_table with 7-column rows
+            if not target_table:
+                tables = driver.find_elements(By.CSS_SELECTOR, "table.list_table")
+                for t in tables:
+                    rows = t.find_elements(By.TAG_NAME, "tr")
+                    if rows:
+                        cells = rows[0].find_elements(By.TAG_NAME, "td")
+                        if len(cells) == 7:
+                            target_table = t
+                            break
+            
+            if not target_table:
+                logger.warning(f"{self.state_key}: No tender results table found")
+                return []
 
-                header = rows[0]
-                headers = [h.text.strip().lower() for h in header.find_elements(By.TAG_NAME, "th")]
-                if not headers:
-                    headers = [h.text.strip().lower() for h in header.find_elements(By.TAG_NAME, "td")]
-                if not any("tender" in h or "closing" in h or "title" in h for h in headers):
-                    continue
+            rows = target_table.find_elements(By.TAG_NAME, "tr")
+            logger.info(f"{self.state_key}: Found results table with {len(rows)} rows")
 
-                for row in rows[1:]:
-                    try:
-                        cells = row.find_elements(By.TAG_NAME, "td")
-                        if len(cells) < 4:
-                            continue
+            for row in rows:
+                try:
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if len(cells) != 7:
+                        continue
 
-                        texts = [c.text.strip() for c in cells]
+                    sno = cells[0].text.strip().rstrip(".")
+                    if not sno or not sno.replace(".", "").isdigit():
+                        continue  # Skip header/footer rows
 
-                        # Get detail link
-                        links = row.find_elements(By.TAG_NAME, "a")
-                        detail_url = None
-                        title = None
-                        for link in links:
-                            href = link.get_attribute("href") or ""
-                            lt = link.text.strip()
-                            if lt and len(lt) > 10:
-                                title = lt
-                                detail_url = href
-                                break
+                    pub_date_str = cells[1].text.strip()
+                    close_date_str = cells[2].text.strip()
+                    open_date_str = cells[3].text.strip()
+                    title_cell = cells[4]
+                    org_text = cells[5].text.strip()
+                    value_text = cells[6].text.strip()
 
-                        if not title:
-                            title = max(texts, key=len) if texts else "Unknown"
+                    # Extract title and link
+                    title_text = title_cell.text.strip()
+                    links = title_cell.find_elements(By.TAG_NAME, "a")
+                    detail_url = ""
+                    if links:
+                        detail_url = links[0].get_attribute("href") or ""
 
-                        tender_id = None
-                        for ct in texts:
-                            if re.match(r"^\d{4}_[A-Z]+_\d+", ct) or re.match(r"^[A-Z]{2,}/", ct):
-                                tender_id = ct
-                                break
+                    # Extract tender ID from title text: [Title] [RefNo][TenderID]
+                    tender_id = ""
+                    id_match = re.search(r'\[(\d{4}_[A-Z]+_\d+_\d+)\]', title_text)
+                    if id_match:
+                        tender_id = id_match.group(1)
+                    
+                    # Clean title — extract just the first [...] part
+                    title_match = re.match(r'\[(.+?)\]', title_text)
+                    title = title_match.group(1) if title_match else title_text
+                    title = title[:2000]
 
-                        pub_date = close_date = None
-                        for ct in texts:
-                            d = _parse_date(ct)
-                            if d:
-                                if not pub_date:
-                                    pub_date = d
-                                else:
-                                    close_date = d
+                    pub_date = _parse_date(pub_date_str)
+                    close_date = _parse_date(close_date_str)
 
-                        org = None
-                        for ct in texts:
-                            if len(ct) > 15 and ct != title and not _parse_date(ct):
-                                org = ct
-                                break
+                    source_id = tender_id or f"{self.state_key}_{hash(title + pub_date_str) & 0xFFFFFFFF}"
 
-                        sid = tender_id or f"{self.state_key}_{hash(title) & 0xFFFFFFFF}"
-
-                        tenders.append(RawTender(
-                            source_id=sid,
-                            title=title[:2000],
-                            source_url=detail_url or self.config["base_url"],
-                            tender_id=tender_id,
-                            state=state,
-                            organization=org,
-                            publication_date=pub_date,
-                            bid_close_date=close_date,
-                            raw_text=" | ".join(texts)[:10000],
-                        ))
-                    except Exception as e:
-                        logger.debug(f"{self.state_key} row error: {e}")
-
-                if tenders:
-                    break
+                    tenders.append(RawTender(
+                        source_id=source_id,
+                        title=title,
+                        source_url=detail_url or base_url,
+                        tender_id=tender_id,
+                        state=state,
+                        organization=org_text[:1000],
+                        publication_date=pub_date,
+                        bid_close_date=close_date,
+                        raw_text=f"{title_text} | {org_text} | {value_text}"[:10000],
+                    ))
+                except Exception as e:
+                    logger.debug(f"{self.state_key} row error: {e}")
 
         except Exception as e:
             logger.error(f"{self.state_key} parse error: {e}")

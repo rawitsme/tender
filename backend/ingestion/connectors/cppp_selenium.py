@@ -1,10 +1,9 @@
 """CPPP (Central Public Procurement Portal) Selenium connector with 2Captcha.
 
-Uses headless Chrome + 2Captcha (or Tesseract fallback) to solve CAPTCHAs.
+Uses the same NIC eProcurement table structure (id='table', class='list_table', 7 columns).
 """
 
 import base64
-import io
 import logging
 import re
 import time
@@ -36,25 +35,20 @@ def _get_driver():
 
 
 def _get_captcha_bytes(driver) -> Optional[bytes]:
-    """Extract CAPTCHA image bytes from the page."""
     try:
         captcha_el = driver.find_element(By.ID, "captchaImage")
         src = captcha_el.get_attribute("src")
-
         if src and src.startswith("data:"):
             b64 = src.split(",", 1)[1].replace("%0A", "").replace("\n", "").replace(" ", "")
             b64 += "=" * (4 - len(b64) % 4) if len(b64) % 4 else ""
             return base64.b64decode(b64)
-        else:
-            # Screenshot fallback
-            return captcha_el.screenshot_as_png
+        return captcha_el.screenshot_as_png
     except Exception as e:
         logger.warning(f"Failed to get CAPTCHA image: {e}")
         return None
 
 
 def _solve_and_submit(driver, max_attempts=5) -> bool:
-    """Solve CAPTCHA and submit. Returns True if we got tender data."""
     for attempt in range(max_attempts):
         captcha_bytes = _get_captcha_bytes(driver)
         if not captcha_bytes:
@@ -64,9 +58,8 @@ def _solve_and_submit(driver, max_attempts=5) -> bool:
 
         solution = solve_captcha_image(captcha_bytes)
         if not solution:
-            logger.debug(f"CAPTCHA attempt {attempt+1}: solver returned nothing, refreshing")
             try:
-                driver.find_element(By.NAME, "captcha").click()  # Refresh captcha
+                driver.find_element(By.NAME, "captcha").click()
                 time.sleep(1)
             except Exception:
                 driver.refresh()
@@ -74,8 +67,6 @@ def _solve_and_submit(driver, max_attempts=5) -> bool:
             continue
 
         logger.info(f"CAPTCHA attempt {attempt+1}: trying '{solution}'")
-
-        # Enter and submit
         captcha_input = driver.find_element(By.NAME, "captchaText")
         captcha_input.clear()
         captcha_input.send_keys(solution)
@@ -87,13 +78,13 @@ def _solve_and_submit(driver, max_attempts=5) -> bool:
         btn.click()
         time.sleep(3)
 
-        # Check if we got results
         page = driver.page_source
-        if "e-Published Date" in page or "Closing Date" in page or "Tender Title" in page:
+        if "Invalid Captcha" in page or "Incorrect Captcha" in page:
+            logger.debug(f"CAPTCHA attempt {attempt+1}: rejected by server")
+            continue
+        if "Organisation Chain" in page or "Total records:" in page or "e-Published Date" in page:
             logger.info(f"CAPTCHA solved on attempt {attempt+1}")
             return True
-
-        logger.debug(f"CAPTCHA attempt {attempt+1}: rejected")
 
     return False
 
@@ -126,19 +117,23 @@ class CPPPSeleniumConnector(BaseConnector):
                 logger.error("CPPP: Failed to solve CAPTCHA")
                 return []
 
-            tenders = self._parse_table(driver)
-            logger.info(f"CPPP: Parsed {len(tenders)} tenders")
+            tenders = self._parse_tender_table(driver)
+            logger.info(f"CPPP: Parsed {len(tenders)} tenders from page 1")
 
             # Pagination
             page_count = 1
             while page_count < 5:
                 try:
-                    next_links = driver.find_elements(By.LINK_TEXT, "Next")
+                    next_links = driver.find_elements(By.LINK_TEXT, "Next >")
+                    if not next_links:
+                        next_links = driver.find_elements(By.LINK_TEXT, "Next")
                     if not next_links:
                         break
                     next_links[0].click()
                     time.sleep(3)
-                    batch = self._parse_table(driver)
+                    batch = self._parse_tender_table(driver)
+                    if not batch:
+                        break
                     tenders.extend(batch)
                     page_count += 1
                 except Exception:
@@ -152,77 +147,87 @@ class CPPPSeleniumConnector(BaseConnector):
 
         return tenders
 
-    def _parse_table(self, driver) -> List[RawTender]:
+    def _parse_tender_table(self, driver) -> List[RawTender]:
+        """Parse the NIC-standard tender results table (7 columns)."""
         tenders = []
+
         try:
-            tables = driver.find_elements(By.TAG_NAME, "table")
-            for table in tables:
-                rows = table.find_elements(By.TAG_NAME, "tr")
-                if len(rows) < 3:
-                    continue
+            # Find the results table
+            target_table = None
+            try:
+                target_table = driver.find_element(By.ID, "table")
+            except Exception:
+                pass
 
-                headers = [h.text.strip().lower() for h in rows[0].find_elements(By.TAG_NAME, "th")]
-                if not any("tender" in h or "closing" in h or "published" in h for h in headers):
-                    continue
+            if not target_table:
+                tables = driver.find_elements(By.CSS_SELECTOR, "table.list_table")
+                for t in tables:
+                    rows = t.find_elements(By.TAG_NAME, "tr")
+                    if rows:
+                        cells = rows[0].find_elements(By.TAG_NAME, "td")
+                        if len(cells) == 7:
+                            target_table = t
+                            break
 
-                logger.info(f"Found tender table: {len(rows)-1} rows")
+            if not target_table:
+                logger.warning("CPPP: No tender results table found")
+                return []
 
-                for row in rows[1:]:
-                    try:
-                        cells = row.find_elements(By.TAG_NAME, "td")
-                        if len(cells) < 4:
-                            continue
+            rows = target_table.find_elements(By.TAG_NAME, "tr")
 
-                        texts = [c.text.strip() for c in cells]
-                        links = row.find_elements(By.TAG_NAME, "a")
-                        detail_url = title = None
-                        for link in links:
-                            lt = link.text.strip()
-                            if lt and len(lt) > 10:
-                                title = lt
-                                detail_url = link.get_attribute("href") or ""
-                                break
+            for row in rows:
+                try:
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if len(cells) != 7:
+                        continue
 
-                        if not title:
-                            title = max(texts, key=len) if texts else "Unknown"
+                    sno = cells[0].text.strip().rstrip(".")
+                    if not sno or not sno.replace(".", "").isdigit():
+                        continue
 
-                        tender_id = None
-                        for ct in texts:
-                            if re.match(r"^\d{4}_[A-Z]+_\d+", ct):
-                                tender_id = ct
-                                break
+                    pub_date_str = cells[1].text.strip()
+                    close_date_str = cells[2].text.strip()
+                    title_cell = cells[4]
+                    org_text = cells[5].text.strip()
+                    value_text = cells[6].text.strip()
 
-                        pub_date = close_date = None
-                        for ct in texts:
-                            d = _parse_date(ct)
-                            if d:
-                                if not pub_date:
-                                    pub_date = d
-                                else:
-                                    close_date = d
+                    title_text = title_cell.text.strip()
+                    links = title_cell.find_elements(By.TAG_NAME, "a")
+                    detail_url = ""
+                    if links:
+                        detail_url = links[0].get_attribute("href") or ""
 
-                        org = None
-                        for ct in texts:
-                            if len(ct) > 15 and ct != title and not _parse_date(ct) and ct != tender_id:
-                                org = ct
-                                break
+                    tender_id = ""
+                    id_match = re.search(r'\[(\d{4}_[A-Z]+_\d+_\d+)\]', title_text)
+                    if id_match:
+                        tender_id = id_match.group(1)
 
-                        sid = tender_id or f"cppp_{hash(title) & 0xFFFFFFFF}"
-                        tenders.append(RawTender(
-                            source_id=sid, title=title[:2000],
-                            source_url=detail_url or BASE_URL,
-                            tender_id=tender_id, state="Central",
-                            organization=org,
-                            publication_date=pub_date, bid_close_date=close_date,
-                            raw_text=" | ".join(texts)[:10000],
-                        ))
-                    except Exception as e:
-                        logger.debug(f"Row error: {e}")
+                    title_match = re.match(r'\[(.+?)\]', title_text)
+                    title = title_match.group(1) if title_match else title_text
+                    title = title[:2000]
 
-                if tenders:
-                    break
+                    pub_date = _parse_date(pub_date_str)
+                    close_date = _parse_date(close_date_str)
+
+                    sid = tender_id or f"cppp_{hash(title + pub_date_str) & 0xFFFFFFFF}"
+
+                    tenders.append(RawTender(
+                        source_id=sid,
+                        title=title,
+                        source_url=detail_url or BASE_URL,
+                        tender_id=tender_id,
+                        state="Central",
+                        organization=org_text[:1000],
+                        publication_date=pub_date,
+                        bid_close_date=close_date,
+                        raw_text=f"{title_text} | {org_text} | {value_text}"[:10000],
+                    ))
+                except Exception as e:
+                    logger.debug(f"CPPP row error: {e}")
+
         except Exception as e:
-            logger.error(f"Table parse error: {e}")
+            logger.error(f"CPPP table parse error: {e}")
+
         return tenders
 
     async def fetch_tender_detail(self, source_id: str) -> Optional[RawTender]:

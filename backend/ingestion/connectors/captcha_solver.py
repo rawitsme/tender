@@ -8,6 +8,7 @@ import base64
 import io
 import logging
 import tempfile
+from typing import Optional
 
 from PIL import Image
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-def solve_captcha_image(image_data: bytes) -> str | None:
+def solve_captcha_image(image_data: bytes) -> Optional[str]:
     """Solve a CAPTCHA image. Returns the solution text or None.
     
     Args:
@@ -35,7 +36,7 @@ def solve_captcha_image(image_data: bytes) -> str | None:
         return _solve_with_tesseract(image_data)
 
 
-def _solve_with_2captcha(image_data: bytes, api_key: str) -> str | None:
+def _solve_with_2captcha(image_data: bytes, api_key: str) -> Optional[str]:
     """Send CAPTCHA to 2Captcha human/ML workers."""
     try:
         from twocaptcha import TwoCaptcha
@@ -65,7 +66,7 @@ def _solve_with_2captcha(image_data: bytes, api_key: str) -> str | None:
         return None
 
 
-def _solve_with_tesseract(image_data: bytes) -> str | None:
+def _solve_with_tesseract(image_data: bytes) -> Optional[str]:
     """Fallback: try Tesseract OCR (low accuracy for NIC CAPTCHAs)."""
     try:
         import pytesseract
