@@ -1,0 +1,32 @@
+import { Routes, Route, Navigate } from 'react-router-dom'
+import { AuthProvider, useAuth } from './hooks/useAuth'
+import Layout from './components/Layout'
+import Dashboard from './pages/Dashboard'
+import TenderSearch from './pages/TenderSearch'
+import TenderDetail from './pages/TenderDetail'
+import Alerts from './pages/Alerts'
+import Login from './pages/Login'
+import Admin from './pages/Admin'
+
+function ProtectedRoute({ children }) {
+  const { user, loading } = useAuth()
+  if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>
+  return user ? children : <Navigate to="/login" />
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+          <Route index element={<Dashboard />} />
+          <Route path="search" element={<TenderSearch />} />
+          <Route path="tenders/:id" element={<TenderDetail />} />
+          <Route path="alerts" element={<Alerts />} />
+          <Route path="admin" element={<Admin />} />
+        </Route>
+      </Routes>
+    </AuthProvider>
+  )
+}
