@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     GEM_API_KEY: str = ""
     GEM_API_SECRET: str = ""
 
+    # CAPTCHA Solving (2Captcha)
+    CAPTCHA_API_KEY: str = ""  # 2Captcha API key — sign up at https://2captcha.com
+
     # OCR
     TESSERACT_CMD: str = "/usr/local/bin/tesseract"
 
