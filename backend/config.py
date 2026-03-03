@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     # CAPTCHA Solving (2Captcha)
     CAPTCHA_API_KEY: str = ""  # 2Captcha API key — sign up at https://2captcha.com
 
+    # WhatsApp API (Business API or webhook gateway)
+    WHATSAPP_API_URL: str = ""
+    WHATSAPP_API_TOKEN: str = ""
+
+    # SMS API (any REST gateway)
+    SMS_API_URL: str = ""
+    SMS_API_KEY: str = ""
+
     # OCR
     TESSERACT_CMD: str = "/usr/local/bin/tesseract"
 

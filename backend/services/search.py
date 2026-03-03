@@ -38,8 +38,15 @@ async def search_tenders(
     conditions = []
 
     # Full-text search using PostgreSQL tsvector
+    # Use OR logic for multi-word queries (e.g. "medical hospital health")
     if query:
-        ts_query = func.plainto_tsquery("english", query)
+        words = [w.strip() for w in query.split() if w.strip()]
+        if len(words) > 1:
+            # OR between words so "medical hospital health" finds tenders with ANY of those words
+            or_expr = ' | '.join(words)
+            ts_query = func.to_tsquery("english", or_expr)
+        else:
+            ts_query = func.plainto_tsquery("english", query)
         conditions.append(Tender.search_vector.op("@@")(ts_query))
 
     # Filters
@@ -97,7 +104,12 @@ async def search_tenders(
 
     # If FTS query, also sort by relevance
     if query:
-        ts_query = func.plainto_tsquery("english", query)
+        words = [w.strip() for w in query.split() if w.strip()]
+        if len(words) > 1:
+            or_expr = ' | '.join(words)
+            ts_query = func.to_tsquery("english", or_expr)
+        else:
+            ts_query = func.plainto_tsquery("english", query)
         rank = func.ts_rank(Tender.search_vector, ts_query)
         order = desc(rank)
 

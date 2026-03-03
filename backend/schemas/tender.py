@@ -43,7 +43,8 @@ class TenderResponse(TenderBase):
     eligibility_criteria: Optional[dict] = None
     status: str = "active"
     parsed_quality_score: Optional[float] = None
-    human_verified: bool = False
+    human_verified: Optional[bool] = False
+    tender_stage: Optional[str] = "bidding"
     document_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -67,6 +68,10 @@ class TenderSearchRequest(BaseModel):
     departments: Optional[List[str]] = None
     tender_types: Optional[List[str]] = None
     status: Optional[List[str]] = None
+    # Single value convenience fields (converted to lists)
+    state: Optional[str] = None
+    source: Optional[str] = None
+    category: Optional[str] = None
     min_value: Optional[Decimal] = None
     max_value: Optional[Decimal] = None
     bid_close_from: Optional[datetime] = None

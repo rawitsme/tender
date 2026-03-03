@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Calendar, MapPin, Building2, Bookmark } from 'lucide-react'
+import { Calendar, MapPin, Building2, Bookmark, ExternalLink, FileText, Download } from 'lucide-react'
 import { format, formatDistanceToNow, isPast, differenceInDays } from 'date-fns'
 
 const sourceColors = {
@@ -19,7 +19,7 @@ const statusColors = {
   CANCELLED: 'bg-red-100 text-red-800',
 }
 
-export default function TenderCard({ tender, bookmarked, onToggleBookmark }) {
+export default function TenderCard({ tender, bookmarked, onToggleBookmark, onGetDetails }) {
   const formatDate = (d) => d ? format(new Date(d), 'dd MMM yyyy') : '—'
   const formatValue = (v) => {
     if (!v) return null
@@ -86,16 +86,53 @@ export default function TenderCard({ tender, bookmarked, onToggleBookmark }) {
               </span>
             </div>
           </div>
-          {tender.tender_value_estimated && (
-            <div className="text-right shrink-0">
-              <p className="text-lg font-bold text-primary-700">{formatValue(tender.tender_value_estimated)}</p>
-              {tender.emd_amount && (
-                <p className="text-xs text-gray-500">EMD: {formatValue(tender.emd_amount)}</p>
-              )}
-            </div>
-          )}
+          <div className="text-right shrink-0 space-y-1">
+            {tender.tender_value_estimated && (
+              <>
+                <p className="text-lg font-bold text-primary-700">{formatValue(tender.tender_value_estimated)}</p>
+                {tender.emd_amount && (
+                  <p className="text-xs text-gray-500">EMD: {formatValue(tender.emd_amount)}</p>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </Link>
+
+      {/* Action row */}
+      <div className="flex items-center gap-3 mt-3 pt-3 border-t border-gray-100">
+        {tender.source_url && (
+          <a href={tender.source_url} target="_blank" rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="inline-flex items-center gap-1 text-xs text-primary-600 hover:text-primary-800 hover:underline">
+            <ExternalLink size={12} /> View on Portal
+          </a>
+        )}
+        {tender.document_count > 0 && (
+          <Link to={`/tenders/${tender.id}`}
+            className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700">
+            <FileText size={12} /> {tender.document_count} doc{tender.document_count > 1 ? 's' : ''}
+          </Link>
+        )}
+        <button
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            if (typeof onGetDetails === 'function') {
+              onGetDetails(tender.id)
+            }
+          }}
+          className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 hover:underline"
+          title="Fetch detailed info and download all documents"
+        >
+          <Download size={12} /> Get Details
+        </button>
+        {tender.tender_stage && tender.tender_stage !== 'bidding' && (
+          <span className="ml-auto px-2 py-0.5 rounded-full text-xs bg-indigo-50 text-indigo-700 capitalize">
+            {tender.tender_stage.replace(/_/g, ' ')}
+          </span>
+        )}
+      </div>
     </div>
   )
 }

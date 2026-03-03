@@ -42,6 +42,16 @@ class TenderStatus(str, enum.Enum):
     CORRIGENDUM = "corrigendum"
 
 
+class TenderStage(str, enum.Enum):
+    BIDDING = "bidding"
+    TECHNICAL_BID_OPENING = "technical_bid_opening"
+    TECHNICAL_EVALUATION = "technical_evaluation"
+    FINANCIAL_BID_OPENING = "financial_bid_opening"
+    FINANCIAL_EVALUATION = "financial_evaluation"
+    AWARDED = "awarded"
+    CANCELLED = "cancelled"
+
+
 class Tender(Base):
     __tablename__ = "tenders"
 
@@ -93,6 +103,14 @@ class Tender(Base):
     fingerprint = Column(String(128), unique=True, index=True)  # Dedup hash
     parsed_quality_score = Column(Float, default=0.0)
     human_verified = Column(Boolean, default=False)
+    tender_stage = Column(
+        Enum(
+            'bidding', 'technical_bid_opening', 'technical_evaluation',
+            'financial_bid_opening', 'financial_evaluation', 'awarded', 'cancelled',
+            name='tenderstage', create_type=False
+        ),
+        default='bidding'
+    )
     
     # Full-text search vector
     search_vector = Column(TSVECTOR)

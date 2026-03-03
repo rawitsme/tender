@@ -4,6 +4,7 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import TenderSearch from './pages/TenderSearch'
 import TenderDetail from './pages/TenderDetail'
+import Compare from './pages/Compare'
 import Alerts from './pages/Alerts'
 import Browse from './pages/Browse'
 import Bookmarks from './pages/Bookmarks'
@@ -25,10 +26,14 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="search" element={<TenderSearch />} />
           <Route path="tenders/:id" element={<TenderDetail />} />
+          <Route path="compare" element={<Compare />} />
           <Route path="browse" element={<Browse />} />
           <Route path="bookmarks" element={<Bookmarks />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="admin" element={<Admin />} />
+          {/* SEO-friendly routes */}
+          <Route path="tenders/category/:keyword" element={<TenderSearch />} />
+          <Route path="tenders/state/:state" element={<TenderSearch />} />
         </Route>
       </Routes>
     </AuthProvider>

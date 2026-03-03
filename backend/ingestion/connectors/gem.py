@@ -126,28 +126,128 @@ class GeMConnector(BaseConnector):
     async def fetch_tender_detail(self, source_id: str) -> Optional[RawTender]:
         session = await self._get_session()
         try:
-            url = f"{self.base_url}/showbidDocument/{source_id}"
-            async with session.get(url, ssl=True) as resp:
+            # Use the correct bidplus domain for document details
+            url = f"https://bidplus.gem.gov.in/showbidDocument/{source_id}"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+            }
+            
+            async with session.get(url, headers=headers, ssl=True) as resp:
                 if resp.status != 200:
                     return None
-                html = await resp.text()
+                
+                content_type = resp.headers.get('content-type', '').lower()
+                
+                if 'pdf' in content_type:
+                    # GeM returns PDF directly - this IS the document
+                    pdf_content = await resp.read()
+                    logger.info(f"GeM returned PDF document: {len(pdf_content):,} bytes")
+                    
+                    # Extract text from PDF if possible
+                    raw_text = ""
+                    try:
+                        from backend.ingestion.parser.pdf_parser import extract_text_from_pdf
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                            tmp.write(pdf_content)
+                            tmp_path = tmp.name
+                        
+                        text_content, _ = extract_text_from_pdf(Path(tmp_path))
+                        raw_text = text_content[:10000] if text_content else ""
+                        
+                        import os
+                        os.unlink(tmp_path)
+                        
+                    except Exception as e:
+                        logger.warning(f"PDF text extraction failed: {e}")
+                        raw_text = f"PDF document ({len(pdf_content):,} bytes) - text extraction failed"
+                    
+                    # For GeM, the document URL IS the detail URL  
+                    doc_urls = [url]
+                    
+                    # Extract basic info from our existing tender data
+                    # Since GeM returns PDF directly, we get limited structured data
+                    return RawTender(
+                        source_id=source_id,
+                        title=f"GeM Bid {source_id}",
+                        source_url=url,
+                        description=f"GeM procurement document ({len(pdf_content):,} bytes PDF)",
+                        department="GeM Portal",
+                        organization="Government e-Marketplace",
+                        state="Central",
+                        category="GeM Procurement",
+                        tender_type="rfq",
+                        raw_text=raw_text,
+                        document_urls=doc_urls,
+                    )
+                    
+                else:
+                    # HTML response - parse normally
+                    html = await resp.text()
+                    soup = BeautifulSoup(html, "lxml")
+                    raw_text = soup.get_text(separator="\n", strip=True)
+                    
+                    # Extract structured info from GeM detail page
+                    details = {}
+                    
+                    # Look for key-value pairs in various formats
+                    for row in soup.find_all("tr"):
+                        cells = row.find_all("td")
+                        if len(cells) >= 2:
+                            key = cells[0].get_text(strip=True).lower().rstrip(":")
+                            val = cells[1].get_text(strip=True)
+                            if key and val and len(val) < 5000:
+                                details[key] = val
+                    
+                    # Find document links
+                    doc_urls = []
+                    for a in soup.find_all("a", href=True):
+                        href = a["href"]
+                        if any(ext in href.lower() for ext in [".pdf", ".doc", ".xls", ".xlsx", ".docx"]):
+                            full_url = href if href.startswith("http") else f"https://bidplus.gem.gov.in{href}"
+                            doc_urls.append(full_url)
+                    
+                    # Parse financial values
+                    def parse_amount(text):
+                        if not text:
+                            return None
+                        import re
+                        # Remove common prefixes and symbols
+                        cleaned = re.sub(r'[₹Rs.\s,]', '', str(text))
+                        try:
+                            # Handle crore/lakh
+                            if 'crore' in text.lower():
+                                return float(cleaned.replace('crore', '').replace('cr', '')) * 10000000
+                            elif 'lakh' in text.lower():
+                                return float(cleaned.replace('lakh', '').replace('lac', '')) * 100000
+                            else:
+                                return float(cleaned) if cleaned.replace('.', '').isdigit() else None
+                        except:
+                            return None
 
-            soup = BeautifulSoup(html, "lxml")
-            raw_text = soup.get_text(separator="\n", strip=True)
-            doc_urls = [
-                (a["href"] if a["href"].startswith("http") else f"{self.base_url}{a['href']}")
-                for a in soup.find_all("a", href=True)
-                if any(ext in a["href"].lower() for ext in [".pdf", ".doc", ".xls"])
-            ]
-
-            return RawTender(
-                source_id=source_id,
-                title=f"GeM Bid {source_id}",
-                source_url=url,
-                state="Central",
-                raw_text=raw_text[:50000],
-                document_urls=doc_urls,
-            )
+                    return RawTender(
+                        source_id=source_id,
+                        title=details.get("title", f"GeM Bid {source_id}"),
+                        source_url=url,
+                        description=details.get("description", details.get("item description")),
+                        department=details.get("department", details.get("buyer organization")),
+                        organization=details.get("ministry", details.get("buyer")),
+                        state="Central",
+                        category=details.get("category", details.get("product category")),
+                        tender_type="rfq",
+                        tender_value=parse_amount(details.get("estimated value")),
+                        emd_amount=parse_amount(details.get("emd", details.get("earnest money"))),
+                        document_fee=parse_amount(details.get("document fee")),
+                        bid_open_date=self._parse_iso(details.get("bid opening date")),
+                        bid_close_date=self._parse_iso(details.get("bid closing date")),
+                        contact_person=details.get("contact person"),
+                        contact_email=details.get("email"),
+                        contact_phone=details.get("phone"),
+                        raw_text=raw_text[:50000],
+                        document_urls=doc_urls,
+                    )
+                    
         except Exception as e:
             logger.error(f"GeM detail failed: {e}")
             return None

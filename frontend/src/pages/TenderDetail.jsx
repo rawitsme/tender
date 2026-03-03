@@ -1,15 +1,150 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Calendar, MapPin, Building2, FileText, ExternalLink, Bookmark, Share2, Copy, Check } from 'lucide-react'
-import { format } from 'date-fns'
+import {
+  ArrowLeft, Calendar, MapPin, Building2, FileText, ExternalLink,
+  Bookmark, Copy, Check, Award, AlertCircle, Download, Package,
+  Clock, IndianRupee, Shield, Users, ChevronRight
+} from 'lucide-react'
+import { format, formatDistanceToNow, isPast, isFuture, differenceInDays } from 'date-fns'
 import api from '../api/client'
+import RealDocuments from '../components/RealDocuments'
+
+const STAGE_PIPELINE = [
+  { key: 'bidding', label: 'Bidding', icon: '📋' },
+  { key: 'technical_bid_opening', label: 'Tech Bid Opening', icon: '📂' },
+  { key: 'technical_evaluation', label: 'Tech Evaluation', icon: '🔍' },
+  { key: 'financial_bid_opening', label: 'Financial Bid Opening', icon: '💰' },
+  { key: 'financial_evaluation', label: 'Financial Evaluation', icon: '📊' },
+  { key: 'awarded', label: 'Awarded', icon: '🏆' },
+]
+
+function StagePipeline({ stage, status }) {
+  if (status === 'cancelled') {
+    return (
+      <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-200 rounded-xl">
+        <span className="text-lg">🚫</span>
+        <span className="font-semibold text-red-800">Tender Cancelled</span>
+      </div>
+    )
+  }
+
+  const currentIdx = STAGE_PIPELINE.findIndex(s => s.key === stage)
+
+  return (
+    <div className="bg-white rounded-xl border p-5">
+      <h2 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+        <Clock size={18} /> Tender Lifecycle Stage
+      </h2>
+      <div className="flex items-center gap-1 overflow-x-auto pb-2">
+        {STAGE_PIPELINE.map((s, i) => {
+          const isActive = s.key === stage
+          const isPassed = i < currentIdx
+          return (
+            <div key={s.key} className="flex items-center shrink-0">
+              <div className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                isActive ? 'bg-primary-100 text-primary-800 ring-2 ring-primary-400' :
+                isPassed ? 'bg-green-100 text-green-800' :
+                'bg-gray-100 text-gray-400'
+              }`}>
+                <span>{s.icon}</span>
+                <span className="whitespace-nowrap">{s.label}</span>
+                {isPassed && <Check size={12} className="text-green-600" />}
+              </div>
+              {i < STAGE_PIPELINE.length - 1 && (
+                <ChevronRight size={14} className={`mx-0.5 shrink-0 ${i < currentIdx ? 'text-green-400' : 'text-gray-300'}`} />
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function InsightCards({ tender }) {
+  const fmt = (d) => d ? format(new Date(d), 'dd MMM yyyy') : null
+  const fmtVal = (v) => {
+    if (!v) return null
+    const n = Number(v)
+    if (n >= 10000000) return `₹${(n / 10000000).toFixed(2)} Cr`
+    if (n >= 100000) return `₹${(n / 100000).toFixed(2)} L`
+    return `₹${n.toLocaleString('en-IN')}`
+  }
+
+  const closeDate = tender.bid_close_date ? new Date(tender.bid_close_date) : null
+  const preBidDate = tender.pre_bid_meeting_date ? new Date(tender.pre_bid_meeting_date) : null
+  const pubDate = tender.publication_date ? new Date(tender.publication_date) : null
+
+  const insights = [
+    closeDate && {
+      icon: '⏰', label: 'Last Date',
+      value: fmt(closeDate),
+      sub: isPast(closeDate) ? 'Closed' : `${formatDistanceToNow(closeDate)} left`,
+      urgent: isFuture(closeDate) && differenceInDays(closeDate, new Date()) <= 3,
+      closed: isPast(closeDate),
+    },
+    preBidDate && {
+      icon: '🤝', label: 'Pre-Bid Meeting',
+      value: fmt(preBidDate),
+      sub: isPast(preBidDate) ? 'Completed' : `in ${formatDistanceToNow(preBidDate)}`,
+      closed: isPast(preBidDate),
+    },
+    tender.emd_amount && {
+      icon: '🏦', label: 'EMD Required',
+      value: fmtVal(tender.emd_amount),
+    },
+    tender.tender_value_estimated && {
+      icon: '💰', label: 'Estimated Value',
+      value: fmtVal(tender.tender_value_estimated),
+    },
+    tender.document_fee && {
+      icon: '📄', label: 'Document Fee',
+      value: fmtVal(tender.document_fee),
+    },
+    pubDate && {
+      icon: '📅', label: 'Published',
+      value: fmt(pubDate),
+      sub: `${formatDistanceToNow(pubDate)} ago`,
+    },
+  ].filter(Boolean)
+
+  if (insights.length === 0) return null
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      {insights.map((ins, i) => (
+        <div key={i} className={`rounded-xl border p-4 text-center ${
+          ins.urgent ? 'bg-red-50 border-red-200' :
+          ins.closed ? 'bg-gray-50 border-gray-200' :
+          'bg-white'
+        }`}>
+          <span className="text-2xl">{ins.icon}</span>
+          <p className="text-xs text-gray-500 mt-1">{ins.label}</p>
+          <p className={`font-bold text-sm mt-0.5 ${ins.urgent ? 'text-red-700' : 'text-gray-900'}`}>{ins.value}</p>
+          {ins.sub && (
+            <p className={`text-xs mt-0.5 ${
+              ins.urgent ? 'text-red-600 font-medium' :
+              ins.closed ? 'text-gray-400' :
+              'text-green-600'
+            }`}>{ins.sub}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
 
 export default function TenderDetail() {
   const { id } = useParams()
   const [tender, setTender] = useState(null)
+  const [similar, setSimilar] = useState([])
   const [loading, setLoading] = useState(true)
   const [bookmarked, setBookmarked] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [pdfPreview, setPdfPreview] = useState(null)
+  const [downloading, setDownloading] = useState(false)
+  const [detailsStatus, setDetailsStatus] = useState(null)
+  const [fetchingDetails, setFetchingDetails] = useState(false)
 
   useEffect(() => {
     api.get(`/tenders/${id}`)
@@ -18,6 +153,14 @@ export default function TenderDetail() {
       .finally(() => setLoading(false))
     api.get('/bookmarks/ids')
       .then(r => setBookmarked(r.data.includes(id)))
+      .catch(() => {})
+    api.get(`/tenders/${id}/similar`)
+      .then(r => setSimilar(r.data))
+      .catch(() => {})
+    
+    // Check details status
+    api.get(`/details/status/${id}`)
+      .then(r => setDetailsStatus(r.data))
       .catch(() => {})
   }, [id])
 
@@ -35,11 +178,106 @@ export default function TenderDetail() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const downloadAll = async () => {
+    setDownloading(true)
+    try {
+      const res = await api.get(`/documents/tender/${id}/download-all`, { responseType: 'blob' })
+      const url = window.URL.createObjectURL(new Blob([res.data]))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `tender_${id}_documents.zip`
+      a.click()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Download all failed:', err)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleGetDetails = async () => {
+    setFetchingDetails(true)
+    try {
+      const res = await api.post(`/details/fetch/${id}`)
+      if (res.data.status === 'existing') {
+        setDetailsStatus(res.data)
+        alert('✅ Details already available! Check below for the complete summary and downloadable documents.')
+      } else {
+        alert('🔄 Started fetching detailed information from the government portal. This will take 2-5 minutes...')
+        // Set status to processing
+        setDetailsStatus({ status: 'processing' })
+        
+        // Poll for updates
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await api.get(`/details/status/${id}`)
+            if (statusRes.data.status === 'complete') {
+              setDetailsStatus(statusRes.data)
+              clearInterval(pollInterval)
+              // Show success notification
+              alert('🎉 Details fetched successfully! Complete summary and documents are now available below.')
+            } else if (statusRes.data.status === 'error') {
+              setDetailsStatus(statusRes.data)
+              clearInterval(pollInterval)
+            }
+          } catch (err) {
+            clearInterval(pollInterval)
+          }
+        }, 10000) // Check every 10 seconds
+        
+        // Clear polling after 5 minutes
+        setTimeout(() => clearInterval(pollInterval), 300000)
+      }
+    } catch (err) {
+      console.error('Get details failed:', err)
+      alert('Failed to fetch details. Please try again.')
+    } finally {
+      setFetchingDetails(false)
+    }
+  }
+
+  const downloadDetailFile = (filename) => {
+    const link = document.createElement('a')
+    link.href = `/api/v1/details/download/${id}/${filename}`
+    link.download = filename
+    link.click()
+  }
+
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>
   if (!tender) return <div className="text-center py-12 text-red-500">Tender not found</div>
 
-  const fmt = (d) => d ? format(new Date(d), 'dd MMM yyyy, hh:mm a') : '—'
-  const fmtVal = (v) => v ? `₹${Number(v).toLocaleString('en-IN')}` : '—'
+  const fmt = (d) => d ? format(new Date(d), 'dd MMM yyyy, hh:mm a') : null
+  const fmtVal = (v) => {
+    if (!v) return null
+    const n = Number(v)
+    if (n >= 10000000) return `\u20B9${(n / 10000000).toFixed(2)} Cr`
+    if (n >= 100000) return `\u20B9${(n / 100000).toFixed(2)} L`
+    return `\u20B9${n.toLocaleString('en-IN')}`
+  }
+
+  const docTypeLabel = (filename) => {
+    const fl = filename.toLowerCase()
+    if (fl.includes('nit') || fl.includes('notice')) return 'NIT'
+    if (fl.includes('boq') || fl.includes('bill')) return 'BOQ'
+    if (fl.includes('technical') || fl.includes('spec')) return 'Technical'
+    if (fl.includes('financial') || fl.includes('price')) return 'Financial'
+    if (fl.includes('appendix') || fl.includes('annex')) return 'Appendix'
+    if (fl.includes('drawing') || fl.includes('dwg')) return 'Drawing'
+    if (fl.includes('corrigendum') || fl.includes('amendment')) return 'Corrigendum'
+    if (fl.includes('addendum')) return 'Addendum'
+    return 'Document'
+  }
+
+  const docTypeColor = (type) => ({
+    'NIT': 'bg-blue-100 text-blue-700',
+    'BOQ': 'bg-purple-100 text-purple-700',
+    'Technical': 'bg-teal-100 text-teal-700',
+    'Financial': 'bg-green-100 text-green-700',
+    'Appendix': 'bg-orange-100 text-orange-700',
+    'Drawing': 'bg-pink-100 text-pink-700',
+    'Corrigendum': 'bg-amber-100 text-amber-700',
+    'Addendum': 'bg-amber-100 text-amber-700',
+  }[type] || 'bg-gray-100 text-gray-700')
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -49,27 +287,39 @@ export default function TenderDetail() {
 
       {/* Header */}
       <div className="bg-white rounded-xl border p-6">
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
           <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 uppercase">{tender.source}</span>
           <span className={`px-2.5 py-1 rounded-full text-xs font-medium capitalize ${
-            tender.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+            tender.status === 'active' ? 'bg-green-100 text-green-800' :
+            tender.status === 'cancelled' ? 'bg-red-100 text-red-800' :
+            tender.status === 'awarded' ? 'bg-emerald-100 text-emerald-800' :
+            'bg-gray-100 text-gray-600'
           }`}>{tender.status}</span>
-          {tender.human_verified && <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">✓ Verified</span>}
+          {tender.tender_stage && tender.tender_stage !== 'bidding' && (
+            <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800 capitalize">
+              {tender.tender_stage?.replace(/_/g, ' ')}
+            </span>
+          )}
+          {tender.human_verified && <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">Verified</span>}
+          {tender.parsed_quality_score > 0.5 && (
+            <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+              Quality: {Math.round(tender.parsed_quality_score * 100)}%
+            </span>
+          )}
         </div>
         <h1 className="text-xl font-bold text-gray-900 mb-2">{tender.title}</h1>
-        {tender.tender_id && <p className="text-sm text-gray-500">NIT/Ref: {tender.tender_id}</p>}
-        {/* Organization Chain */}
+        {tender.tender_id && <p className="text-sm text-gray-500 font-mono">NIT/Ref: {tender.tender_id}</p>}
         {tender.organization && tender.organization.includes('||') && (
           <div className="flex flex-wrap gap-1 mt-3">
             {tender.organization.split('||').map((part, i) => (
               <span key={i} className="inline-flex items-center">
-                {i > 0 && <span className="text-gray-400 mx-1">→</span>}
+                {i > 0 && <span className="text-gray-400 mx-1">&rarr;</span>}
                 <span className="px-2 py-0.5 bg-gray-100 rounded text-xs text-gray-700">{part.trim()}</span>
               </span>
             ))}
           </div>
         )}
-        <div className="flex items-center gap-3 mt-3">
+        <div className="flex items-center gap-3 mt-3 flex-wrap">
           {tender.source_url && (
             <a href={tender.source_url} target="_blank" rel="noopener"
               className="inline-flex items-center gap-1 text-sm text-primary-600 hover:underline">
@@ -90,20 +340,113 @@ export default function TenderDetail() {
         </div>
       </div>
 
+      {/* Insight Cards */}
+      <InsightCards tender={tender} />
+
+      {/* Stage Pipeline */}
+      <StagePipeline stage={tender.tender_stage || 'bidding'} status={tender.status} />
+
+      {/* Detailed Info Section */}
+      <div className="bg-white rounded-xl border p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+            <Package size={18} /> Detailed Information
+          </h2>
+          {(!detailsStatus || detailsStatus.status === 'not_found') && (
+            <button
+              onClick={handleGetDetails}
+              disabled={fetchingDetails}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <Download size={14} />
+              {fetchingDetails ? 'Fetching...' : 'Get Detailed Info'}
+            </button>
+          )}
+        </div>
+
+        {!detailsStatus || detailsStatus.status === 'not_found' ? (
+          <div className="text-center py-8 text-gray-500">
+            <Package size={48} className="mx-auto text-gray-300 mb-4" />
+            <p className="text-lg font-medium mb-2">No detailed information fetched yet</p>
+            <p className="text-sm">Click "Get Detailed Info" to fetch complete details, documents, and generate a comprehensive summary from the source portal.</p>
+          </div>
+        ) : detailsStatus.status === 'complete' ? (
+          <div className="space-y-4">
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <h3 className="font-semibold text-green-800 mb-2">✅ Details Successfully Fetched</h3>
+              <p className="text-sm text-green-700">Complete information and documents have been downloaded and processed.</p>
+            </div>
+            
+            {detailsStatus.summary && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h3 className="font-semibold text-gray-800 mb-2">📋 AI Summary</h3>
+                <div className="prose prose-sm max-w-none">
+                  <pre className="whitespace-pre-wrap text-sm text-gray-700">{detailsStatus.summary}</pre>
+                </div>
+              </div>
+            )}
+            
+            {detailsStatus.documents && detailsStatus.documents.length > 0 && (
+              <div>
+                <h3 className="font-semibold text-gray-800 mb-2">📁 Downloaded Documents ({detailsStatus.documents.length})</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {detailsStatus.documents.map((doc, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 bg-white border rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <FileText size={16} className="text-gray-400" />
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{doc.filename}</p>
+                          <p className="text-xs text-gray-500">{(doc.size / 1024).toFixed(1)} KB</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => downloadDetailFile(doc.filename)}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-primary-600 hover:text-primary-800 hover:bg-primary-50 rounded"
+                      >
+                        <Download size={12} /> Download
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : detailsStatus.status === 'processing' ? (
+          <div className="text-center py-8 text-orange-600">
+            <Clock size={48} className="mx-auto text-orange-300 mb-4 animate-spin" />
+            <p className="text-lg font-medium mb-2">⏳ Processing Details...</p>
+            <p className="text-sm">Fetching complete information from the source portal. This may take 2-5 minutes.</p>
+            <p className="text-xs text-orange-500 mt-2">You'll get a notification when it's ready!</p>
+          </div>
+        ) : (
+          <div className="text-center py-8 text-red-600">
+            <AlertCircle size={48} className="mx-auto text-red-300 mb-4" />
+            <p className="text-lg font-medium mb-2">❌ Error Fetching Details</p>
+            <p className="text-sm">There was an issue fetching the details. Please try again.</p>
+            <button
+              onClick={handleGetDetails}
+              className="mt-3 px-4 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700"
+            >
+              Try Again
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Key Details */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl border p-5 space-y-3">
-          <h2 className="font-semibold text-gray-900">Details</h2>
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2"><Building2 size={16} /> Details</h2>
           <dl className="space-y-2 text-sm">
             {[
               ['Department', tender.department],
-              ['Organization', tender.organization],
+              ['Organization', tender.organization?.replace(/\|\|/g, ' \u2192 ')],
               ['State', tender.state],
               ['Category', tender.category],
-              ['Type', tender.tender_type],
+              ['Type', tender.tender_type?.replace(/_/g, ' ')],
             ].map(([k, v]) => v && (
-              <div key={k} className="flex justify-between">
-                <dt className="text-gray-500">{k}</dt>
+              <div key={k} className="flex justify-between gap-4">
+                <dt className="text-gray-500 shrink-0">{k}</dt>
                 <dd className="text-gray-900 font-medium text-right">{v}</dd>
               </div>
             ))}
@@ -111,7 +454,7 @@ export default function TenderDetail() {
         </div>
 
         <div className="bg-white rounded-xl border p-5 space-y-3">
-          <h2 className="font-semibold text-gray-900">Financials & Dates</h2>
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2"><Calendar size={16} /> Dates & Financials</h2>
           <dl className="space-y-2 text-sm">
             {[
               ['Estimated Value', fmtVal(tender.tender_value_estimated)],
@@ -121,9 +464,9 @@ export default function TenderDetail() {
               ['Bid Opens', fmt(tender.bid_open_date)],
               ['Bid Closes', fmt(tender.bid_close_date)],
               ['Pre-Bid Meeting', fmt(tender.pre_bid_meeting_date)],
-            ].map(([k, v]) => v !== '—' && (
-              <div key={k} className="flex justify-between">
-                <dt className="text-gray-500">{k}</dt>
+            ].map(([k, v]) => v && (
+              <div key={k} className="flex justify-between gap-4">
+                <dt className="text-gray-500 shrink-0">{k}</dt>
                 <dd className="text-gray-900 font-medium text-right">{v}</dd>
               </div>
             ))}
@@ -134,28 +477,123 @@ export default function TenderDetail() {
       {/* Contact */}
       {(tender.contact_person || tender.contact_email || tender.contact_phone) && (
         <div className="bg-white rounded-xl border p-5">
-          <h2 className="font-semibold text-gray-900 mb-2">Contact</h2>
+          <h2 className="font-semibold text-gray-900 mb-2 flex items-center gap-2"><Users size={16} /> Contact Information</h2>
           <div className="text-sm space-y-1 text-gray-700">
-            {tender.contact_person && <p>👤 {tender.contact_person}</p>}
-            {tender.contact_email && <p>📧 {tender.contact_email}</p>}
-            {tender.contact_phone && <p>📞 {tender.contact_phone}</p>}
+            {tender.contact_person && <p>&#x1F464; {tender.contact_person}</p>}
+            {tender.contact_email && <p>&#x1F4E7; <a href={`mailto:${tender.contact_email}`} className="text-primary-600 hover:underline">{tender.contact_email}</a></p>}
+            {tender.contact_phone && <p>&#x1F4DE; <a href={`tel:${tender.contact_phone}`} className="text-primary-600 hover:underline">{tender.contact_phone}</a></p>}
           </div>
         </div>
       )}
 
-      {/* Documents */}
+      {/* Eligibility */}
+      {tender.eligibility_criteria && Object.keys(tender.eligibility_criteria).length > 0 && (
+        <div className="bg-blue-50 rounded-xl border border-blue-200 p-5">
+          <h2 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
+            <Shield size={18} /> Eligibility Criteria
+          </h2>
+          <div className="text-sm text-blue-800 space-y-1">
+            {typeof tender.eligibility_criteria === 'object' ?
+              Object.entries(tender.eligibility_criteria).map(([k, v]) => (
+                <div key={k} className="flex gap-2">
+                  <span className="font-medium shrink-0">{k}:</span>
+                  <span>{String(v)}</span>
+                </div>
+              ))
+              : <p>{String(tender.eligibility_criteria)}</p>
+            }
+          </div>
+        </div>
+      )}
+
+      {/* Tender Result */}
+      {tender.result && (
+        <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5">
+          <h2 className="font-semibold text-emerald-900 mb-2 flex items-center gap-2">
+            <Award size={18} /> Award Result
+          </h2>
+          <div className="text-sm space-y-1 text-emerald-800">
+            {tender.result.winner && <p><strong>Winner:</strong> {tender.result.winner}</p>}
+            {tender.result.org && <p><strong>Organization:</strong> {tender.result.org}</p>}
+            {tender.result.value && <p><strong>Award Value:</strong> {fmtVal(tender.result.value)}</p>}
+            {tender.result.date && <p><strong>Award Date:</strong> {tender.result.date}</p>}
+          </div>
+        </div>
+      )}
+
+      {/* Corrigenda */}
+      {tender.corrigenda?.length > 0 && (
+        <div className="bg-amber-50 rounded-xl border border-amber-200 p-5">
+          <h2 className="font-semibold text-amber-900 mb-3 flex items-center gap-2">
+            <AlertCircle size={18} /> Corrigenda / Amendments ({tender.corrigenda.length})
+          </h2>
+          <div className="space-y-2">
+            {tender.corrigenda.map((c, i) => (
+              <div key={c.id || i} className="p-3 bg-white rounded-lg border border-amber-100">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-medium text-amber-800">#{c.number || i + 1}</span>
+                  {c.date && <span className="text-xs text-gray-500">{c.date}</span>}
+                </div>
+                {c.description && <p className="text-sm text-gray-700">{c.description}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Documents with download links */}
       {tender.documents?.length > 0 && (
         <div className="bg-white rounded-xl border p-5">
-          <h2 className="font-semibold text-gray-900 mb-3">Documents</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+              <FileText size={18} /> Documents ({tender.documents.length})
+            </h2>
+            {tender.documents.length > 1 && (
+              <button onClick={downloadAll} disabled={downloading}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50">
+                <Package size={14} />
+                {downloading ? 'Zipping...' : 'Download All (.zip)'}
+              </button>
+            )}
+          </div>
           <div className="space-y-2">
-            {tender.documents.map(doc => (
-              <a key={doc.id} href={`/api/v1/documents/${doc.id}`}
-                className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                <FileText size={16} className="text-gray-500" />
-                <span className="text-sm">{doc.filename}</span>
-                {doc.file_size && <span className="text-xs text-gray-400 ml-auto">{(doc.file_size / 1024).toFixed(0)} KB</span>}
-              </a>
-            ))}
+            {tender.documents.map(doc => {
+              const type = docTypeLabel(doc.filename)
+              return (
+                <div key={doc.id}>
+                  <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                    <FileText size={16} className="text-gray-400 shrink-0" />
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium shrink-0 ${docTypeColor(type)}`}>{type}</span>
+                    <span className="text-sm text-gray-800 flex-1 truncate">{doc.filename}</span>
+                    {doc.file_size && <span className="text-xs text-gray-400 shrink-0">{(doc.file_size / 1024).toFixed(0)} KB</span>}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {doc.mime_type === 'application/pdf' && (
+                        <button
+                          onClick={() => setPdfPreview(pdfPreview === doc.id ? null : doc.id)}
+                          className="text-xs px-2 py-1 bg-primary-100 text-primary-700 rounded hover:bg-primary-200">
+                          {pdfPreview === doc.id ? 'Hide' : 'Preview'}
+                        </button>
+                      )}
+                      <a href={`/api/v1/documents/${doc.id}`} download={doc.filename}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200">
+                        <Download size={12} /> Download
+                      </a>
+                    </div>
+                  </div>
+                  {pdfPreview === doc.id && (
+                    <div className="mt-2 border rounded-lg overflow-hidden" style={{ height: '600px' }}>
+                      <iframe
+                        src={`/api/v1/documents/${doc.id}`}
+                        width="100%"
+                        height="100%"
+                        title={doc.filename}
+                        className="border-0"
+                      />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -198,6 +636,38 @@ export default function TenderDetail() {
         <div className="bg-white rounded-xl border p-5">
           <h2 className="font-semibold text-gray-900 mb-2">Description</h2>
           <p className="text-sm text-gray-700 whitespace-pre-wrap">{tender.description}</p>
+        </div>
+      )}
+
+      {/* Real Documents Download */}
+      <RealDocuments 
+        tenderId={tender.id}
+        tenderTitle={tender.title}
+        source={tender.source}
+      />
+
+      {/* Similar Tenders */}
+      {similar.length > 0 && (
+        <div className="bg-white rounded-xl border p-5">
+          <h2 className="font-semibold text-gray-900 mb-3">Similar Tenders</h2>
+          <div className="space-y-2">
+            {similar.map(s => (
+              <Link key={s.id} to={`/tenders/${s.id}`}
+                className="block p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 uppercase">{s.source}</span>
+                  {s.state && <span className="text-xs text-gray-500">{s.state}</span>}
+                  {s.tender_value_estimated && (
+                    <span className="text-xs font-medium text-primary-700 ml-auto">{fmtVal(s.tender_value_estimated)}</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-900 line-clamp-1">{s.title}</p>
+                {s.bid_close_date && (
+                  <p className="text-xs text-gray-500 mt-1">Closes: {s.bid_close_date.slice(0, 10)}</p>
+                )}
+              </Link>
+            ))}
+          </div>
         </div>
       )}
     </div>

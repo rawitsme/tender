@@ -7,11 +7,20 @@ from backend.api.alerts import router as alerts_router
 from backend.api.documents import router as documents_router
 from backend.api.admin import router as admin_router
 from backend.api.bookmarks import router as bookmarks_router
+from backend.api.export import router as export_router
+from backend.api.analytics import router as analytics_router
+from backend.api.details import router as details_router
+from backend.api.real_documents import router as real_documents_router
 
 api_router = APIRouter()
+
 api_router.include_router(auth_router)
 api_router.include_router(tenders_router)
 api_router.include_router(alerts_router)
 api_router.include_router(documents_router)
 api_router.include_router(admin_router)
 api_router.include_router(bookmarks_router)
+api_router.include_router(export_router)
+api_router.include_router(analytics_router)
+api_router.include_router(details_router)
+api_router.include_router(real_documents_router, prefix="/real-docs", tags=["Real Documents"])

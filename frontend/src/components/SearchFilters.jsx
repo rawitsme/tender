@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Filter, X } from 'lucide-react'
+import { Filter, X, Plus } from 'lucide-react'
 
 const SOURCES = [
   { value: 'GEM', label: 'GeM', color: 'bg-green-100 text-green-800' },
@@ -24,12 +24,30 @@ const CLOSING_OPTIONS = [
 
 export default function SearchFilters({ filters, onChange }) {
   const [open, setOpen] = useState(true)
+  const [keywordInput, setKeywordInput] = useState('')
 
   const update = (key, value) => onChange({ ...filters, [key]: value })
   const toggleArray = (key, item) => {
     const arr = filters[key] || []
     const next = arr.includes(item) ? arr.filter(x => x !== item) : [...arr, item]
     update(key, next.length ? next : undefined)
+  }
+
+  // Keyword management
+  const keywords = filters.keywords || []
+  const addKeyword = () => {
+    const kw = keywordInput.trim()
+    if (kw && !keywords.includes(kw)) {
+      update('keywords', [...keywords, kw])
+    }
+    setKeywordInput('')
+  }
+  const removeKeyword = (kw) => {
+    const next = keywords.filter(k => k !== kw)
+    update('keywords', next.length ? next : undefined)
+  }
+  const handleKeywordKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addKeyword() }
   }
 
   const hasFilters = Object.keys(filters).some(k => filters[k])
@@ -45,6 +63,37 @@ export default function SearchFilters({ filters, onChange }) {
       </button>
       {open && (
         <div className="mt-4 space-y-5">
+
+          {/* Keywords */}
+          <div>
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Keywords</label>
+            <div className="flex gap-1.5 mt-1.5">
+              <input
+                type="text"
+                value={keywordInput}
+                onChange={e => setKeywordInput(e.target.value)}
+                onKeyDown={handleKeywordKeyDown}
+                placeholder="Add keyword..."
+                className="flex-1 px-3 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none"
+              />
+              <button onClick={addKeyword}
+                className="px-2 py-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700">
+                <Plus size={14} />
+              </button>
+            </div>
+            {keywords.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {keywords.map(kw => (
+                  <span key={kw} className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary-50 text-primary-700 rounded-full text-xs font-medium">
+                    {kw}
+                    <button onClick={() => removeKeyword(kw)} className="hover:text-primary-900">
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Source */}
           <div>

@@ -231,7 +231,95 @@ class CPPPSeleniumConnector(BaseConnector):
         return tenders
 
     async def fetch_tender_detail(self, source_id: str) -> Optional[RawTender]:
-        return None
+        """Fetch full tender detail from CPPP detail page."""
+        driver = None
+        try:
+            driver = _get_driver()
+            detail_url = f"{BASE_URL}?component=%24DirectLink&page=FrontEndTenderPreview&service=direct&sp={source_id}"
+            driver.get(detail_url)
+            time.sleep(3)
+
+            # Handle CAPTCHA if present
+            try:
+                captcha = driver.find_element(By.ID, "captchaImage")
+                if captcha:
+                    if not _solve_and_submit(driver):
+                        return None
+            except Exception:
+                pass
+
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+
+            # Extract key-value pairs
+            fields = {}
+            for row in soup.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) >= 2:
+                    key = cells[0].get_text(strip=True).lower().rstrip(":")
+                    val = cells[1].get_text(strip=True)
+                    if key and val and len(val) < 5000:
+                        fields[key] = val
+
+            # Document links
+            doc_urls = []
+            for link in soup.find_all("a", href=True):
+                href = link["href"]
+                if any(ext in href.lower() for ext in [".pdf", ".doc", ".xls", ".zip", "download"]):
+                    full = href if href.startswith("http") else f"https://eprocure.gov.in{href}"
+                    doc_urls.append(full)
+
+            raw_text = soup.get_text(separator="\n", strip=True)[:50000]
+
+            return RawTender(
+                source_id=source_id,
+                title=fields.get("tender title", fields.get("work description", f"CPPP Tender {source_id}")),
+                source_url=detail_url,
+                tender_id=fields.get("tender id", fields.get("nit no", fields.get("nit/rfp no"))),
+                description=fields.get("work description", fields.get("brief description")),
+                department=fields.get("department name", fields.get("department")),
+                organization=fields.get("organisation chain", fields.get("organisation name")),
+                state="Central",
+                category=fields.get("product category", fields.get("category")),
+                tender_type=fields.get("tender type", fields.get("form of contract")),
+                tender_value=self._parse_amount(fields.get("tender value in ₹", fields.get("tender value", fields.get("estimated cost", "")))),
+                emd_amount=self._parse_amount(fields.get("emd amount in ₹", fields.get("emd", fields.get("earnest money", "")))),
+                document_fee=self._parse_amount(fields.get("fee payable to", fields.get("tender fee", fields.get("document cost", "")))),
+                publication_date=_parse_date(fields.get("published date", fields.get("publish date", ""))),
+                bid_open_date=_parse_date(fields.get("bid opening date", fields.get("tender opening date", ""))),
+                bid_close_date=_parse_date(fields.get("bid submission end date", fields.get("closing date", ""))),
+                pre_bid_meeting_date=_parse_date(fields.get("pre bid meeting date", fields.get("pre-bid meeting date", ""))),
+                pre_bid_meeting_venue=fields.get("pre bid meeting place", fields.get("pre-bid meeting venue")),
+                contact_person=fields.get("tender inviting authority", fields.get("officer inviting bids")),
+                contact_email=fields.get("email", fields.get("e-mail")),
+                contact_phone=fields.get("phone", fields.get("contact no", fields.get("mobile"))),
+                raw_text=raw_text,
+                document_urls=doc_urls,
+            )
+        except Exception as e:
+            logger.error(f"CPPP detail fetch failed for {source_id}: {e}")
+            return None
+        finally:
+            if driver:
+                driver.quit()
+
+    @staticmethod
+    def _parse_amount(amount_str: str) -> Optional[float]:
+        if not amount_str:
+            return None
+        cleaned = re.sub(r'[₹Rs.\s,]', '', amount_str)
+        multiplier = 1
+        lower = amount_str.lower()
+        if 'crore' in lower or 'cr' in lower:
+            multiplier = 10_000_000
+            cleaned = re.sub(r'(?i)(crore|cr)', '', cleaned)
+        elif 'lakh' in lower or 'lac' in lower:
+            multiplier = 100_000
+            cleaned = re.sub(r'(?i)(lakh|lac)', '', cleaned)
+        try:
+            return float(cleaned) * multiplier
+        except ValueError:
+            return None
 
     async def close(self):
         pass
