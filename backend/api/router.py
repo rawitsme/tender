@@ -13,6 +13,7 @@ from backend.api.details import router as details_router
 from backend.api.real_documents import router as real_documents_router
 from backend.api.tender_analysis import router as tender_analysis_router
 from backend.api.health import router as health_router
+from backend.api.download_center import router as download_center_router
 
 api_router = APIRouter()
 
@@ -28,3 +29,4 @@ api_router.include_router(details_router)
 api_router.include_router(real_documents_router, prefix="/real-docs", tags=["Real Documents"])
 api_router.include_router(tender_analysis_router, tags=["Tender Analysis"])
 api_router.include_router(health_router, tags=["Health"])
+api_router.include_router(download_center_router)

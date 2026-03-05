@@ -45,7 +45,22 @@ async def check_document_status(tender_id: str, portal: str = "uttarakhand"):
         }
     
     if tender_id in _active_downloads:
-        return {"status": "downloading"}
+        state = _active_downloads[tender_id]
+        if state == "downloading":
+            return {"status": "downloading"}
+        elif state == "done":
+            # Re-check files
+            fresh = get_downloaded_documents(tender_id, portal)
+            if fresh and fresh.get("success"):
+                del _active_downloads[tender_id]
+                summary = get_tender_summary(fresh.get("details", {}))
+                return {"status": "downloaded", "documents": fresh["documents"], "summary": summary}
+            return {"status": "done"}
+        else:
+            # Failed — return error and clear so user can retry
+            error_msg = state
+            del _active_downloads[tender_id]
+            return {"status": "failed", "error": error_msg}
     
     return {"status": "not_downloaded"}
 
@@ -78,7 +93,10 @@ async def start_download(
     def do_download():
         try:
             result = download_nic_tender_documents(tender_id, portal, title)
-            _active_downloads[tender_id] = "done" if result["success"] else "failed"
+            if result["success"]:
+                _active_downloads[tender_id] = "done"
+            else:
+                _active_downloads[tender_id] = f"failed: {'; '.join(result.get('errors', ['unknown']))}"
         except Exception as e:
             _active_downloads[tender_id] = f"error: {e}"
     

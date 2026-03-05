@@ -46,13 +46,7 @@ export default function TenderSearch() {
   useEffect(() => {
     const q = searchParams.get('q') || ''
     setQuery(q)
-    // If q has multiple words from browse, seed as keywords
-    if (q && q.includes(' ')) {
-      setKeywords(q.split(/\s+/).filter(Boolean))
-      setQuery('')
-    } else {
-      setKeywords([])
-    }
+    setKeywords([])
     const f = {}
     if (searchParams.get('source')) f.sources = [searchParams.get('source')]
     if (searchParams.get('state')) f.states = [searchParams.get('state')]

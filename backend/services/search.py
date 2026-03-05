@@ -4,10 +4,36 @@ from typing import Optional, List, Tuple
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select, func, text, and_, or_, desc, asc
+from sqlalchemy import select, func, text, and_, or_, desc, asc, case, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.tender import Tender, TenderSource, TenderStatus
+
+
+def _build_tsquery(query: str):
+    """
+    Build a smart tsquery from user input.
+    
+    Strategy:
+    - Single word: plain match
+    - Multi-word: AND between words (user wants all terms, not any)
+    - Quoted phrases: kept as phrase search
+    - Falls back to OR only if AND returns 0 results (handled at query level)
+    """
+    words = [w.strip() for w in query.split() if w.strip() and len(w.strip()) > 1]
+    if not words:
+        return None, None
+    
+    if len(words) == 1:
+        # Single word — use prefix matching for partial matches
+        and_expr = words[0] + ":*"
+        or_expr = words[0] + ":*"
+    else:
+        # Multi-word: AND for precision, OR as fallback
+        and_expr = " & ".join(w for w in words)
+        or_expr = " | ".join(w for w in words)
+    
+    return and_expr, or_expr
 
 
 async def search_tenders(
@@ -36,18 +62,36 @@ async def search_tenders(
     """Full-text search with filters. Returns (tenders, total_count)."""
 
     conditions = []
+    use_fts = False
+    ts_query_expr = None
 
-    # Full-text search using PostgreSQL tsvector
-    # Use OR logic for multi-word queries (e.g. "medical hospital health")
+    # Full-text search
     if query:
-        words = [w.strip() for w in query.split() if w.strip()]
-        if len(words) > 1:
-            # OR between words so "medical hospital health" finds tenders with ANY of those words
-            or_expr = ' | '.join(words)
-            ts_query = func.to_tsquery("english", or_expr)
-        else:
-            ts_query = func.plainto_tsquery("english", query)
-        conditions.append(Tender.search_vector.op("@@")(ts_query))
+        and_expr, or_expr = _build_tsquery(query)
+        if and_expr:
+            use_fts = True
+            # Try AND first (all words must match) — if that gives results, use it
+            # Otherwise fall back to OR
+            and_tsq = func.to_tsquery("english", and_expr)
+            or_tsq = func.to_tsquery("english", or_expr)
+            
+            # Check AND match count
+            and_count = await db.execute(
+                select(func.count(Tender.id)).where(Tender.search_vector.op("@@")(and_tsq))
+            )
+            and_total = and_count.scalar() or 0
+            
+            if and_total > 0:
+                # AND has results — use it for precision
+                ts_query_expr = and_tsq
+                conditions.append(Tender.search_vector.op("@@")(and_tsq))
+            else:
+                # Fall back to OR but also add ILIKE on title for fuzzy matching
+                ts_query_expr = or_tsq
+                # Use OR FTS + title ILIKE as combined condition
+                fts_cond = Tender.search_vector.op("@@")(or_tsq)
+                ilike_cond = Tender.title.ilike(f"%{query}%")
+                conditions.append(or_(fts_cond, ilike_cond))
 
     # Filters
     if states:
@@ -61,7 +105,9 @@ async def search_tenders(
     if tender_types:
         conditions.append(Tender.tender_type.in_(tender_types))
     if status:
-        conditions.append(Tender.status.in_(status))
+        # Handle case-insensitive status matching
+        status_upper = [s.upper() for s in status]
+        conditions.append(Tender.status.in_(status_upper))
     if min_value is not None:
         conditions.append(Tender.tender_value_estimated >= min_value)
     if max_value is not None:
@@ -84,9 +130,12 @@ async def search_tenders(
         conditions.append(Tender.bid_close_date >= now)
         conditions.append(Tender.bid_close_date <= now + timedelta(days=days))
 
-    # Text search on department
+    # Text search on department/org (ILIKE for partial match)
     if department_search:
-        conditions.append(Tender.department.ilike(f"%{department_search}%"))
+        conditions.append(or_(
+            Tender.department.ilike(f"%{department_search}%"),
+            Tender.organization.ilike(f"%{department_search}%"),
+        ))
 
     # Text search on category
     if category_search:
@@ -99,19 +148,18 @@ async def search_tenders(
     total = (await db.execute(count_q)).scalar() or 0
 
     # Sort
-    sort_col = getattr(Tender, sort_by, Tender.publication_date)
-    order = desc(sort_col) if sort_order == "desc" else asc(sort_col)
-
-    # If FTS query, also sort by relevance
-    if query:
-        words = [w.strip() for w in query.split() if w.strip()]
-        if len(words) > 1:
-            or_expr = ' | '.join(words)
-            ts_query = func.to_tsquery("english", or_expr)
-        else:
-            ts_query = func.plainto_tsquery("english", query)
-        rank = func.ts_rank(Tender.search_vector, ts_query)
+    if use_fts and ts_query_expr is not None and sort_by in ("relevance", "created_at", "publication_date"):
+        # Rank by relevance: ts_rank with normalization
+        # Weight: title match (A) > department (B) > description (B) > category (C)
+        rank = func.ts_rank(
+            Tender.search_vector,
+            ts_query_expr,
+            32  # normalization: rank / (rank + 1) to dampen long doc advantage
+        )
         order = desc(rank)
+    else:
+        sort_col = getattr(Tender, sort_by, Tender.publication_date)
+        order = desc(sort_col) if sort_order == "desc" else asc(sort_col)
 
     # Query
     q = (
@@ -152,23 +200,23 @@ async def get_tender_stats(db: AsyncSession) -> dict:
     )
     by_state = {row[0]: row[1] for row in state_q.all()}
 
-    # By department (top 20)
+    # By department (top 30)
     dept_q = await db.execute(
         select(Tender.department, func.count(Tender.id))
         .where(Tender.department.isnot(None))
         .group_by(Tender.department)
         .order_by(func.count(Tender.id).desc())
-        .limit(20)
+        .limit(30)
     )
     by_department = {row[0]: row[1] for row in dept_q.all()}
 
-    # By organization (top 20)
+    # By organization (top 30)
     org_q = await db.execute(
         select(Tender.organization, func.count(Tender.id))
         .where(Tender.organization.isnot(None))
         .group_by(Tender.organization)
         .order_by(func.count(Tender.id).desc())
-        .limit(20)
+        .limit(30)
     )
     by_organization = {row[0]: row[1] for row in org_q.all()}
 
@@ -181,7 +229,9 @@ async def get_tender_stats(db: AsyncSession) -> dict:
 
     # Avg value
     avg_val = (await db.execute(
-        select(func.avg(Tender.tender_value_estimated)).where(Tender.tender_value_estimated.isnot(None))
+        select(func.avg(Tender.tender_value_estimated)).where(
+            and_(Tender.tender_value_estimated.isnot(None), Tender.tender_value_estimated > 0)
+        )
     )).scalar()
 
     return {

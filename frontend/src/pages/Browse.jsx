@@ -70,7 +70,7 @@ function AuthorityBrowser() {
             <p className="text-xs font-medium text-gray-500 uppercase mb-2">Organizations</p>
             <div className="grid grid-cols-1 gap-1">
               {data.organizations.slice(0, 10).map(o => (
-                <Link key={o.name} to={'/search?q=' + encodeURIComponent(o.name)}
+                <Link key={o.name} to={'/search?department=' + encodeURIComponent(o.name)}
                   className="flex items-center justify-between py-2 px-3 bg-white rounded-lg hover:bg-primary-50 text-sm">
                   <span className="text-gray-700 truncate mr-2">{o.name}</span>
                   <span className="text-xs font-medium text-primary-600 shrink-0">{o.count.toLocaleString()}</span>

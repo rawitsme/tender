@@ -15,7 +15,9 @@ import base64
 import json
 import logging
 import os
+import signal
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -50,6 +52,8 @@ def _make_driver(download_dir: str) -> webdriver.Chrome:
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1400,1024")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-extensions")
     opts.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
     prefs = {
         "download.default_directory": download_dir,
@@ -58,6 +62,9 @@ def _make_driver(download_dir: str) -> webdriver.Chrome:
     }
     opts.add_experimental_option("prefs", prefs)
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+    # Timeouts: prevent infinite hangs
+    driver.set_page_load_timeout(30)
+    driver.implicitly_wait(5)
     driver.execute_cdp_cmd("Browser.setDownloadBehavior", {
         "behavior": "allow", "downloadPath": download_dir, "eventsEnabled": True
     })
@@ -117,9 +124,12 @@ def _solve_captcha(driver, btn_name="Search", max_tries=5) -> bool:
     return False
 
 
-def _find_tender(driver, tender_id: str, max_pages=80):
-    """Find tender in listing table. First try Tender ID search, then paginate."""
-    # Strategy 1: Use the portal's Tender ID search box (much faster)
+def _find_tender(driver, tender_id: str, max_pages=5):
+    """Find tender in listing table. Uses Tender ID search first (fast), 
+    then falls back to limited pagination."""
+    search_used = False
+    
+    # Strategy 1: Use the portal's Tender ID search box
     try:
         tid_input = None
         for name in ["TenderId", "tenderId", "tender_id"]:
@@ -131,50 +141,71 @@ def _find_tender(driver, tender_id: str, max_pages=80):
             logger.info(f"Using Tender ID search for: {tender_id}")
             tid_input.clear()
             tid_input.send_keys(tender_id)
-            for btn_name in ["Search", "search", "Go", "Submit"]:
+            # Need to re-solve CAPTCHA for search
+            if not _solve_captcha(driver, "Search"):
+                logger.warning("Search CAPTCHA failed, will try pagination")
+            else:
+                search_used = True
+                time.sleep(3)
                 try:
-                    driver.find_element(By.NAME, btn_name).click()
-                    break
+                    driver.switch_to.alert.accept()
+                    time.sleep(1)
                 except:
                     pass
-            time.sleep(4)
-            try:
-                driver.switch_to.alert.accept()
-                time.sleep(1)
-            except:
-                pass
-            logger.info("Tender ID search submitted")
+                logger.info("Tender ID search submitted")
+                # Save search results page for debugging
+                try:
+                    debug_path = STORAGE_BASE / "debug_search.html"
+                    with open(debug_path, "w", encoding="utf-8") as df:
+                        df.write(driver.page_source)
+                    logger.info(f"Saved search results HTML to {debug_path}")
+                except:
+                    pass
     except Exception as e:
         logger.warning(f"Tender ID search failed: {e}")
 
-    # Now look for the tender in results (search or first page)
-    for page in range(1, max_pages + 1):
+    # Strategy 2: Scan results (search narrows to 1 page, pagination as fallback)
+    pages_to_scan = 2 if search_used else max_pages
+    for page in range(1, pages_to_scan + 1):
         try:
             table = driver.find_element(By.ID, "table")
         except:
             tables = driver.find_elements(By.CSS_SELECTOR, "table.list_table")
             table = tables[0] if tables else None
         if not table:
+            logger.warning(f"No table found on page {page}")
             return None
-        for row in table.find_elements(By.TAG_NAME, "tr"):
+        rows = table.find_elements(By.TAG_NAME, "tr")
+        logger.info(f"Page {page}: found {len(rows)} rows in table")
+        for row_idx, row in enumerate(rows):
             cells = row.find_elements(By.TAG_NAME, "td")
             if len(cells) < 3:
                 continue
-            if tender_id in " ".join(c.text for c in cells):
+            # Only read first few cells to avoid slow element access
+            try:
+                cell_texts = [cells[i].text for i in range(min(4, len(cells)))]
+                row_text = " ".join(cell_texts)
+            except Exception:
+                continue
+            if row_idx < 3:
+                logger.info(f"  Row {row_idx}: {row_text[:120]}")
+            if tender_id in row_text:
                 links = row.find_elements(By.TAG_NAME, "a")
                 for lnk in links:
                     if len(lnk.text.strip()) > 10:
                         return lnk
                 if links:
                     return links[0]
-        try:
-            nxt = driver.find_elements(By.LINK_TEXT, "Next >") or driver.find_elements(By.PARTIAL_LINK_TEXT, "Next")
-            if not nxt:
+        # Only paginate if we didn't use search
+        if page < pages_to_scan:
+            try:
+                nxt = driver.find_elements(By.LINK_TEXT, "Next >") or driver.find_elements(By.PARTIAL_LINK_TEXT, "Next")
+                if not nxt:
+                    break
+                nxt[0].click()
+                time.sleep(3)
+            except:
                 break
-            nxt[0].click()
-            time.sleep(3)
-        except:
-            break
     return None
 
 
@@ -203,6 +234,42 @@ def _wait_download(dl_dir: Path, timeout=30) -> Optional[Path]:
     return None
 
 
+MAX_DOWNLOAD_SECONDS = 120  # Hard timeout: 2 minutes max per download
+
+
+class _DownloadTimeout(Exception):
+    pass
+
+
+def _timeout_handler(signum, frame):
+    raise _DownloadTimeout("Download exceeded time limit")
+
+
+class _DriverKillTimer:
+    """Thread-safe timeout: kills the WebDriver after MAX seconds.
+    Works from any thread (unlike SIGALRM which is main-thread only)."""
+    def __init__(self, seconds, driver_ref):
+        self._expired = threading.Event()
+        def _kill():
+            self._expired.set()
+            drv = driver_ref.get("driver")
+            if drv:
+                logger.error(f"Hard timeout ({seconds}s) — killing Chrome")
+                try:
+                    drv.quit()
+                except:
+                    pass
+        self._timer = threading.Timer(seconds, _kill)
+        self._timer.daemon = True
+    def start(self):
+        self._timer.start()
+    def cancel(self):
+        self._timer.cancel()
+    @property
+    def expired(self):
+        return self._expired.is_set()
+
+
 def download_nic_tender_documents(
     tender_id: str,
     portal_key: str = "uttarakhand",
@@ -210,8 +277,7 @@ def download_nic_tender_documents(
 ) -> Dict:
     """
     Download all documents for a tender from an NIC eProcurement portal.
-    
-    Returns dict with: success, details, documents[], errors[]
+    Hard timeout of 2 minutes. Returns dict with: success, details, documents[], errors[]
     """
     portal = NIC_PORTALS.get(portal_key)
     if not portal:
@@ -240,9 +306,14 @@ def download_nic_tender_documents(
     }
 
     driver = None
+    driver_ref = {"driver": None}  # mutable ref for kill timer
+    kill_timer = _DriverKillTimer(MAX_DOWNLOAD_SECONDS, driver_ref)
+    kill_timer.start()
+
     try:
         dl_abs = str(dl_dir.resolve())
         driver = _make_driver(dl_abs)
+        driver_ref["driver"] = driver
 
         # Step 1: Navigate to active tenders
         logger.info(f"Loading {portal_key} portal...")
@@ -346,13 +417,25 @@ def download_nic_tender_documents(
 
         return result
 
+    except _DownloadTimeout:
+        logger.error(f"Download timed out after {MAX_DOWNLOAD_SECONDS}s for {tender_id}")
+        result["errors"].append(f"Download timed out after {MAX_DOWNLOAD_SECONDS} seconds")
+        return result
     except Exception as e:
-        logger.error(f"Download failed: {e}")
-        result["errors"].append(str(e))
+        if kill_timer.expired:
+            logger.error(f"Download timed out after {MAX_DOWNLOAD_SECONDS}s for {tender_id}")
+            result["errors"].append(f"Download timed out after {MAX_DOWNLOAD_SECONDS} seconds")
+        else:
+            logger.error(f"Download failed: {e}")
+            result["errors"].append(str(e))
         return result
     finally:
+        kill_timer.cancel()
         if driver:
-            driver.quit()
+            try:
+                driver.quit()
+            except:
+                pass
 
 
 def get_downloaded_documents(tender_id: str, portal_key: str = "uttarakhand") -> Optional[Dict]:

@@ -14,6 +14,17 @@ from backend.ingestion.connectors.captcha_solver import solve_captcha_image
 BASE = "https://uktenders.gov.in"
 DB_URL = "postgresql://tender:tender_dev_2026@localhost:5432/tender_portal"
 
+def parse_tender_value(v):
+    """Parse Indian number format like '2,65,00,000' → 26500000.0"""
+    if not v or v.upper() == 'NA':
+        return 0
+    cleaned = re.sub(r'[^0-9.]', '', v)
+    try:
+        return float(cleaned) if cleaned else 0
+    except:
+        return 0
+
+
 def parse_date(s):
     for fmt in ["%d-%b-%Y %I:%M %p", "%d-%b-%Y %H:%M", "%d-%m-%Y"]:
         try: return datetime.strptime(s.strip(), fmt)
@@ -166,13 +177,14 @@ def main():
                             tender_value_estimated, parsed_quality_score, created_at, updated_at)
                         VALUES (:id, :title, 'UTTARAKHAND', :sid, :url, :tid,
                             :org, :org, 'Uttarakhand', 'ACTIVE', 'OPEN_TENDER',
-                            :pub, :close, :open, 0, 0.5, NOW(), NOW())
+                            :pub, :close, :open, :val, 0.5, NOW(), NOW())
                     """), {
                         "id": str(uuid.uuid4()), "title": t["title"],
                         "sid": t["source_id"], "url": t["source_url"],
                         "tid": t["tender_id"], "org": t["organization"],
                         "pub": t["publication_date"], "close": t["bid_close_date"],
                         "open": t["bid_open_date"],
+                        "val": parse_tender_value(t.get("tender_value")),
                     })
                     new_count += 1
                 except Exception as e:

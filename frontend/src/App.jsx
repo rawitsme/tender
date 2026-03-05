@@ -10,6 +10,7 @@ import Browse from './pages/Browse'
 import Bookmarks from './pages/Bookmarks'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
+import DownloadCenter from './pages/DownloadCenter'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="bookmarks" element={<Bookmarks />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="admin" element={<Admin />} />
+          <Route path="download" element={<DownloadCenter />} />
           {/* SEO-friendly routes */}
           <Route path="tenders/category/:keyword" element={<TenderSearch />} />
           <Route path="tenders/state/:state" element={<TenderSearch />} />
