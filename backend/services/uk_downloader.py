@@ -164,6 +164,24 @@ def _find_tender(driver, tender_id: str, max_pages=5):
     except Exception as e:
         logger.warning(f"Tender ID search failed: {e}")
 
+    # Strategy 1.5: Quick check — search the page source for the tender ID link
+    # NIC portals put tender ID in text like [2026_UAAN1_92208_1] near DirectLink anchors
+    if search_used:
+        try:
+            # Find all DirectLink anchors — these are the tender title links
+            direct_links = driver.find_elements(By.ID, "DirectLink")
+            if not direct_links:
+                direct_links = driver.find_elements(By.CSS_SELECTOR, "a[title='View Tender Information']")
+            logger.info(f"Found {len(direct_links)} DirectLink anchor(s) after search")
+            
+            # If search returned results, the tender ID appears in nearby text
+            # Just check page source for the ID and grab the first DirectLink
+            if tender_id in driver.page_source and direct_links:
+                logger.info(f"Tender {tender_id} found in page source — using first DirectLink")
+                return direct_links[0]
+        except Exception as e:
+            logger.warning(f"Quick DirectLink search failed: {e}")
+
     # Strategy 2: Scan results (search narrows to 1 page, pagination as fallback)
     pages_to_scan = 2 if search_used else max_pages
     for page in range(1, pages_to_scan + 1):
@@ -234,7 +252,7 @@ def _wait_download(dl_dir: Path, timeout=30) -> Optional[Path]:
     return None
 
 
-MAX_DOWNLOAD_SECONDS = 120  # Hard timeout: 2 minutes max per download
+MAX_DOWNLOAD_SECONDS = 300  # Hard timeout: 5 minutes max per download
 
 
 class _DownloadTimeout(Exception):
@@ -334,32 +352,53 @@ def download_nic_tender_documents(
             return result
 
         # Step 4: Open detail page
+        logger.info("Opening tender detail page...")
         try:
-            link.click()
-        except:
+            href = link.get_attribute("href")
+            if href:
+                logger.info(f"Navigating to: {href[:120]}")
+                driver.get(href)
+            else:
+                link.click()
+        except Exception as click_err:
+            logger.warning(f"Click failed ({click_err}), trying JS click")
             driver.execute_script("arguments[0].click();", link)
-        time.sleep(4)
+        time.sleep(5)
         detail_url = driver.current_url
+        logger.info(f"Detail page loaded: {detail_url[:120]}")
 
-        # Save detail page
+        # Save detail page HTML (extract details later from saved file, not via slow Selenium)
+        detail_html = driver.page_source
         with open(tender_dir / "detail.html", "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-
-        # Extract details
-        details = _extract_details(driver)
-        result["details"] = details
+            f.write(detail_html)
+        logger.info(f"Saved detail page ({len(detail_html)} chars)")
 
         # Step 5: Click "Download as zip" → CAPTCHA page
+        logger.info("Looking for 'Download as zip' link...")
         zip_link = None
-        for a in driver.find_elements(By.TAG_NAME, "a"):
-            if "download as zip" in a.text.lower():
-                zip_link = a
-                break
+        # Fast: try known ID first
+        zip_links = driver.find_elements(By.ID, "DirectLink_8")
+        if zip_links:
+            zip_link = zip_links[0]
+        else:
+            # Fallback: search by partial link text
+            zip_links = driver.find_elements(By.PARTIAL_LINK_TEXT, "Download as zip")
+            if zip_links:
+                zip_link = zip_links[0]
         if not zip_link:
             result["errors"].append("No 'Download as zip' link on detail page")
+            logger.error("No 'Download as zip' link found on detail page")
             return result
 
-        zip_link.click()
+        logger.info("Clicking 'Download as zip'...")
+        try:
+            href = zip_link.get_attribute("href")
+            if href:
+                driver.get(href)
+            else:
+                zip_link.click()
+        except:
+            zip_link.click()
         time.sleep(3)
 
         # Step 6: Solve download CAPTCHA
@@ -372,14 +411,19 @@ def download_nic_tender_documents(
         time.sleep(2)
 
         # Step 7: Go back to detail page and click download AGAIN
+        logger.info("Going back to detail page for second download click...")
         if "FrontEndTenderDetails" not in driver.page_source:
             driver.get(detail_url)
             time.sleep(4)
 
-        for a in driver.find_elements(By.TAG_NAME, "a"):
-            if "download as zip" in a.text.lower():
-                a.click()
-                break
+        zip2 = driver.find_elements(By.ID, "DirectLink_8")
+        if not zip2:
+            zip2 = driver.find_elements(By.PARTIAL_LINK_TEXT, "Download as zip")
+        if zip2:
+            logger.info("Clicking 'Download as zip' (second click)...")
+            zip2[0].click()
+        else:
+            logger.error("Could not find 'Download as zip' for second click")
 
         # Wait for download
         dl_file = _wait_download(dl_dir, timeout=60)
@@ -410,6 +454,20 @@ def download_nic_tender_documents(
             })
 
         result["success"] = True
+
+        # Extract details from saved HTML (fast, no Selenium)
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(detail_html, "html.parser")
+            for row in soup.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) >= 2:
+                    k = cells[0].get_text(strip=True).rstrip(":")
+                    v = cells[1].get_text(strip=True)
+                    if k and v and len(k) < 100:
+                        result["details"][k] = v
+        except Exception as e:
+            logger.warning(f"Detail extraction from HTML failed: {e}")
         
         # Save result
         with open(tender_dir / "result.json", "w") as f:
