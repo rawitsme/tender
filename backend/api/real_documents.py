@@ -1,211 +1,221 @@
 """
-Real Documents API - Serve actual PDF documents from government portals
-Fixed version with proper async database handling
+Real Documents API - Download and serve actual tender documents from government portals.
 """
 
 import asyncio
-import os
 import json
+import os
 from pathlib import Path
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends
-from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import select
+from typing import Optional
 
-from backend.database import get_db
-from backend.models.tender import Tender
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi.responses import FileResponse, JSONResponse
+
+from backend.services.uk_downloader import (
+    download_nic_tender_documents,
+    get_downloaded_documents,
+    get_tender_summary,
+    STORAGE_BASE,
+)
+from backend.services.tender_summary import generate_detailed_summary
 
 router = APIRouter()
 
-REAL_DOCS_BASE = Path("storage/documents/real_pdfs")
+# Track active downloads
+_active_downloads = {}
+
 
 @router.get("/test")
 async def test_real_documents():
-    """Test endpoint to verify real document functionality"""
-    
-    # Check if we have any downloaded documents
-    if not REAL_DOCS_BASE.exists():
-        return {"status": "no_downloads", "message": "No real documents downloaded yet"}
-    
-    folders = [f for f in REAL_DOCS_BASE.iterdir() if f.is_dir()]
-    total_pdfs = 0
-    total_size = 0
-    
-    documents = []
-    for folder in folders:
-        pdfs = list(folder.glob("*.pdf")) + list(folder.glob("*.PDF"))
-        for pdf in pdfs:
-            size = pdf.stat().st_size
-            total_pdfs += 1
-            total_size += size
-            
-            documents.append({
-                "folder": folder.name,
-                "filename": pdf.name,
-                "size_mb": size / (1024 * 1024),
-                "path": str(pdf)
-            })
-    
-    return {
-        "status": "success",
-        "total_folders": len(folders),
-        "total_pdfs": total_pdfs,
-        "total_size_mb": total_size / (1024 * 1024),
-        "sample_documents": documents[:5]  # Show first 5
-    }
+    """Test endpoint."""
+    return {"status": "ok", "storage": str(STORAGE_BASE), "exists": STORAGE_BASE.exists()}
 
-@router.get("/list/{tender_id}")
-async def list_real_documents(tender_id: str, db = Depends(get_db)):
-    """
-    List already downloaded real documents for a tender
-    """
-    
-    # Check if tender exists
-    result = await db.execute(select(Tender).where(Tender.id == tender_id))
-    tender = result.scalar_one_or_none()
-    if not tender:
-        raise HTTPException(status_code=404, detail="Tender not found")
-    
-    # Look for existing downloads
-    source = tender.source.upper()
-    source_id = tender.source_id
-    
-    # Check possible folder names
-    possible_folders = [
-        REAL_DOCS_BASE / f"{source}_{source_id}_{tender_id[:8]}",
-        REAL_DOCS_BASE / f"{source}_{source_id}_{tender_id}",
-        REAL_DOCS_BASE / f"{source}_{source_id}"
-    ]
-    
-    for folder in possible_folders:
-        if folder.exists():
-            files = []
-            total_size = 0
-            
-            # List PDF files
-            for pdf_file in list(folder.glob("*.pdf")) + list(folder.glob("*.PDF")):
-                file_size = pdf_file.stat().st_size
-                total_size += file_size
-                
-                files.append({
-                    "filename": pdf_file.name,
-                    "size": file_size,
-                    "size_mb": file_size / (1024 * 1024),
-                    "path": str(pdf_file),
-                    "type": "PDF"
-                })
-            
-            # Check for metadata
-            metadata_file = folder / "download_metadata.json"
-            metadata = {}
-            if metadata_file.exists():
-                try:
-                    with open(metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                except:
-                    pass
-            
-            return {
-                "status": "found",
-                "tender_id": tender_id,
-                "source": source,
-                "source_id": source_id,
-                "folder": str(folder),
-                "files": files,
-                "total_files": len(files),
-                "total_size_mb": total_size / (1024 * 1024),
-                "metadata": metadata
-            }
-    
-    return {
-        "status": "not_found",
-        "tender_id": tender_id,
-        "message": "No downloaded documents found. Use /download/{tender_id} to fetch them."
-    }
 
-@router.get("/file/{tender_id}/{filename}")
-async def serve_real_document(tender_id: str, filename: str, db = Depends(get_db)):
-    """
-    Serve a specific downloaded document file
-    """
+@router.get("/status/{tender_id}")
+async def check_document_status(tender_id: str, portal: str = "uttarakhand"):
+    """Check if documents are already downloaded for a tender."""
+    result = get_downloaded_documents(tender_id, portal)
+    if result and result.get("success"):
+        summary = get_tender_summary(result.get("details", {}))
+        return {
+            "status": "downloaded",
+            "documents": result["documents"],
+            "summary": summary,
+            "details": result["details"],
+        }
     
-    # Check if tender exists
-    result = await db.execute(select(Tender).where(Tender.id == tender_id))
-    tender = result.scalar_one_or_none()
-    if not tender:
-        raise HTTPException(status_code=404, detail="Tender not found")
+    if tender_id in _active_downloads:
+        return {"status": "downloading"}
     
-    # Find the file
-    source = tender.source.upper()
-    source_id = tender.source_id
-    
-    possible_folders = [
-        REAL_DOCS_BASE / f"{source}_{source_id}_{tender_id[:8]}",
-        REAL_DOCS_BASE / f"{source}_{source_id}_{tender_id}",
-        REAL_DOCS_BASE / f"{source}_{source_id}"
-    ]
-    
-    for folder in possible_folders:
-        file_path = folder / filename
-        if file_path.exists() and file_path.suffix.lower() in ['.pdf', '.doc', '.docx', '.xls', '.xlsx']:
-            # Determine media type
-            media_type = "application/pdf" if file_path.suffix.lower() == '.pdf' else "application/octet-stream"
-            
-            return FileResponse(
-                path=file_path,
-                media_type=media_type,
-                filename=filename,
-                headers={
-                    "Content-Disposition": f"attachment; filename={filename}",
-                    "X-Tender-ID": tender_id,
-                    "X-Source": source
-                }
-            )
-    
-    raise HTTPException(status_code=404, detail="Document file not found")
+    return {"status": "not_downloaded"}
+
 
 @router.post("/download/{tender_id}")
-async def download_real_documents(tender_id: str, db = Depends(get_db)):
-    """
-    Download real PDF documents for a tender
-    Returns download status and list of available files
-    """
+async def start_download(
+    tender_id: str,
+    background_tasks: BackgroundTasks,
+    portal: str = "uttarakhand",
+    title: str = "",
+):
+    """Start downloading documents for a tender (runs in background)."""
+    # Check if already downloaded
+    existing = get_downloaded_documents(tender_id, portal)
+    if existing and existing.get("success"):
+        summary = get_tender_summary(existing.get("details", {}))
+        return {
+            "status": "already_downloaded",
+            "documents": existing["documents"],
+            "summary": summary,
+        }
     
-    # Check if tender exists
-    result = await db.execute(select(Tender).where(Tender.id == tender_id))
-    tender = result.scalar_one_or_none()
-    if not tender:
-        raise HTTPException(status_code=404, detail="Tender not found")
+    # Check if already downloading
+    if tender_id in _active_downloads:
+        return {"status": "already_downloading"}
     
-    try:
-        # Import and run the real PDF downloader
-        import sys
-        sys.path.append('/Users/rahulwealthdiscovery.in/Code/Tender')
-        
-        from real_pdf_downloader import download_real_pdfs_for_tender
-        
-        download_result = await download_real_pdfs_for_tender(tender_id)
-        
-        if download_result and download_result["downloaded_files"]:
-            return {
-                "status": "success",
-                "tender_id": tender_id,
-                "source": download_result["source"],
-                "files_downloaded": len(download_result["downloaded_files"]),
-                "total_size_mb": download_result["total_size"] / (1024 * 1024),
-                "files": download_result["downloaded_files"],
-                "download_folder": download_result["folder_path"]
+    # Start background download
+    _active_downloads[tender_id] = "downloading"
+    
+    def do_download():
+        try:
+            result = download_nic_tender_documents(tender_id, portal, title)
+            _active_downloads[tender_id] = "done" if result["success"] else "failed"
+        except Exception as e:
+            _active_downloads[tender_id] = f"error: {e}"
+    
+    background_tasks.add_task(asyncio.to_thread, do_download)
+    
+    return {"status": "started", "message": f"Downloading documents for {tender_id}..."}
+
+
+@router.get("/download-sync/{tender_id}")
+async def download_sync(
+    tender_id: str,
+    portal: str = "uttarakhand",
+    title: str = "",
+):
+    """Download documents synchronously (blocking). Use for testing."""
+    existing = get_downloaded_documents(tender_id, portal)
+    if existing and existing.get("success"):
+        summary = get_tender_summary(existing.get("details", {}))
+        return {
+            "status": "already_downloaded",
+            "documents": existing["documents"],
+            "summary": summary,
+        }
+    
+    result = await asyncio.to_thread(download_nic_tender_documents, tender_id, portal, title)
+    
+    if result["success"]:
+        summary = get_tender_summary(result.get("details", {}))
+        return {
+            "status": "downloaded",
+            "documents": result["documents"],
+            "summary": summary,
+            "details": result["details"],
+        }
+    else:
+        raise HTTPException(status_code=500, detail={"errors": result["errors"]})
+
+
+@router.get("/list/{tender_id}")
+async def list_documents(tender_id: str, portal: str = "uttarakhand"):
+    """List downloaded documents for a tender."""
+    result = get_downloaded_documents(tender_id, portal)
+    if not result or not result.get("success"):
+        return {"documents": [], "downloaded": False}
+    
+    docs = []
+    for doc in result.get("documents", []):
+        p = Path(doc["path"])
+        docs.append({
+            "name": doc["name"],
+            "size": doc["size"],
+            "exists": p.exists(),
+            "download_url": f"/api/v1/real-docs/file/{tender_id}/{doc['name']}?portal={portal}",
+        })
+    
+    summary = get_tender_summary(result.get("details", {}))
+    return {"documents": docs, "downloaded": True, "summary": summary}
+
+
+@router.get("/file/{tender_id}/{filename}")
+async def serve_document(tender_id: str, filename: str, portal: str = "uttarakhand"):
+    """Serve a downloaded document file."""
+    safe_id = tender_id.replace("/", "_").replace("\\", "_")
+    
+    # Look in extracted dir first, then downloads
+    for subdir in ["extracted", "downloads"]:
+        file_path = STORAGE_BASE / portal / safe_id / subdir / filename
+        if file_path.exists():
+            # Determine media type
+            ext = file_path.suffix.lower()
+            media_types = {
+                ".pdf": "application/pdf",
+                ".xls": "application/vnd.ms-excel",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".doc": "application/msword",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".zip": "application/zip",
             }
-        else:
-            return {
-                "status": "no_documents_found", 
-                "tender_id": tender_id,
-                "message": "No PDF documents could be downloaded from the portal",
-                "reason": download_result.get("error") if download_result else "Unknown error"
-            }
-            
-    except Exception as e:
+            return FileResponse(
+                path=str(file_path),
+                filename=filename,
+                media_type=media_types.get(ext, "application/octet-stream"),
+            )
+    
+    raise HTTPException(status_code=404, detail=f"Document not found: {filename}")
+
+
+@router.get("/summary/{tender_id}")
+async def get_summary(tender_id: str, portal: str = "uttarakhand"):
+    """Get tender summary from downloaded detail page."""
+    result = get_downloaded_documents(tender_id, portal)
+    if not result:
+        raise HTTPException(status_code=404, detail="Documents not downloaded yet")
+    
+    summary = get_tender_summary(result.get("details", {}))
+    return {
+        "tender_id": tender_id,
+        "summary": summary,
+        "documents": result.get("documents", []),
+        "raw_details": result.get("details", {}),
+    }
+
+
+@router.get("/detailed-summary/{tender_id}")
+async def get_detailed_summary(tender_id: str, portal: str = "uttarakhand"):
+    """
+    Generate a one-pager detailed summary by extracting text from
+    downloaded PDFs/XLS and combining with portal-scraped metadata.
+    
+    Returns: tender_title, publishing_agency, published_date, last_date,
+    pre_bid_date, emd, estimated_value, scope_of_work, eligibility_criteria,
+    jv_allowed, documents list.
+    """
+    result = get_downloaded_documents(tender_id, portal)
+    if not result or not result.get("success"):
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to download documents: {str(e)}"
+            status_code=404,
+            detail="Documents not downloaded yet. Download documents first.",
         )
+    
+    tender_dir = result.get("files_dir")
+    if not tender_dir or not Path(tender_dir).exists():
+        # Reconstruct path
+        safe_id = tender_id.replace("/", "_").replace("\\", "_")
+        tender_dir = str(STORAGE_BASE / portal / safe_id)
+    
+    portal_details = result.get("details", {})
+    
+    summary = await asyncio.to_thread(
+        generate_detailed_summary, tender_dir, portal_details
+    )
+    
+    if summary.get("error"):
+        raise HTTPException(status_code=500, detail=summary["error"])
+    
+    return {
+        "tender_id": tender_id,
+        "portal": portal,
+        "summary": summary,
+    }

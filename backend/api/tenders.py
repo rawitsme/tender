@@ -102,12 +102,12 @@ async def browse_facets(db: AsyncSession = Depends(get_db)):
         by_state[row[0]] = row[1]
     
     by_dept = {}
-    result = await db.execute(text("SELECT department, COUNT(*) FROM tenders WHERE department != '' GROUP BY department ORDER BY count DESC LIMIT 20"))
+    result = await db.execute(text("SELECT department, COUNT(*) FROM tenders WHERE department != '' GROUP BY department ORDER BY count DESC LIMIT 50"))
     for row in result.fetchall():
         by_dept[row[0]] = row[1]
     
     by_org = {}
-    result = await db.execute(text("SELECT organization, COUNT(*) FROM tenders WHERE organization != '' GROUP BY organization ORDER BY count DESC LIMIT 20"))
+    result = await db.execute(text("SELECT organization, COUNT(*) FROM tenders WHERE organization != '' GROUP BY organization ORDER BY count DESC LIMIT 50"))
     for row in result.fetchall():
         by_org[row[0]] = row[1]
     
@@ -290,17 +290,17 @@ async def authorities_hierarchy(db: AsyncSession = Depends(get_db)):
         dept_q = await db.execute(text("""
             SELECT department, COUNT(*) as cnt FROM tenders
             WHERE state = :state AND department IS NOT NULL AND department != '' AND department != 'NA'
-            GROUP BY department ORDER BY cnt DESC LIMIT 15
+            GROUP BY department ORDER BY cnt DESC
         """), {"state": s["name"]})
         depts[s["name"]] = [{"name": r[0], "count": r[1]} for r in dept_q.fetchall()]
 
-    # Level 3b: Organizations per state (top 15 each)  
+    # Level 3b: Organizations per state (all)
     orgs = {}
     for s in [{"name": "Central"}] + states:
         org_q = await db.execute(text("""
             SELECT organization, COUNT(*) as cnt FROM tenders
             WHERE state = :state AND organization IS NOT NULL AND organization != ''
-            GROUP BY organization ORDER BY cnt DESC LIMIT 15
+            GROUP BY organization ORDER BY cnt DESC
         """), {"state": s["name"]})
         orgs[s["name"]] = [{"name": r[0], "count": r[1]} for r in org_q.fetchall()]
 
@@ -322,14 +322,14 @@ async def authority_departments(
     dept_q = await db.execute(text("""
         SELECT department, COUNT(*) as cnt FROM tenders
         WHERE state = :state AND department IS NOT NULL AND department != '' AND department != 'NA'
-        GROUP BY department ORDER BY cnt DESC LIMIT 20
+        GROUP BY department ORDER BY cnt DESC
     """), {"state": state})
     departments = [{"name": r[0], "count": r[1]} for r in dept_q.fetchall()]
 
     org_q = await db.execute(text("""
         SELECT organization, COUNT(*) as cnt FROM tenders
         WHERE state = :state AND organization IS NOT NULL AND organization != ''
-        GROUP BY organization ORDER BY cnt DESC LIMIT 20
+        GROUP BY organization ORDER BY cnt DESC
     """), {"state": state})
     organizations = [{"name": r[0], "count": r[1]} for r in org_q.fetchall()]
 
@@ -373,15 +373,48 @@ async def get_tender(tender_id: UUID, db: AsyncSession = Depends(get_db)):
     if not tender:
         raise HTTPException(status_code=404, detail="Tender not found")
 
-    data = TenderDetailResponse.model_validate(tender)
-    data.documents = [
-        {"id": str(d.id), "filename": d.filename, "file_size": d.file_size, "mime_type": d.mime_type}
-        for d in tender.documents
-    ]
-    data.corrigenda = [
-        {"id": str(c.id), "number": c.corrigendum_number, "date": str(c.published_date), "description": c.description}
-        for c in tender.corrigenda
-    ]
+    # Convert tender to dict and prepare documents/corrigenda separately
+    tender_dict = {
+        "id": str(tender.id),
+        "source": tender.source,
+        "source_url": tender.source_url or "",
+        "source_id": tender.source_id or "",
+        "tender_id": tender.tender_id or "",
+        "title": tender.title or "",
+        "description": tender.description or "",
+        "department": tender.department or "",
+        "organization": tender.organization or "",
+        "state": tender.state or "",
+        "category": tender.category or "",
+        "procurement_category": tender.procurement_category or "",
+        "tender_type": tender.tender_type or "",
+        "tender_value_estimated": tender.tender_value_estimated,
+        "emd_amount": tender.emd_amount,
+        "document_fee": tender.document_fee,
+        "publication_date": tender.publication_date,
+        "bid_open_date": tender.bid_open_date,
+        "bid_close_date": tender.bid_close_date,
+        "pre_bid_meeting_date": tender.pre_bid_meeting_date,
+        "pre_bid_meeting_venue": tender.pre_bid_meeting_venue or "",
+        "contact_person": tender.contact_person or "",
+        "contact_email": tender.contact_email or "",
+        "contact_phone": tender.contact_phone or "",
+        "eligibility_criteria": tender.eligibility_criteria,
+        "status": tender.status,
+        "tender_stage": tender.tender_stage,
+        "created_at": tender.created_at,
+        "updated_at": tender.updated_at,
+        "documents": [
+            {"id": str(d.id), "filename": d.filename, "file_size": d.file_size, "mime_type": d.mime_type}
+            for d in tender.documents
+        ],
+        "corrigenda": [
+            {"id": str(c.id), "number": c.corrigendum_number, "date": str(c.published_date), "description": c.description}
+            for c in tender.corrigenda
+        ]
+    }
+    
+    data = TenderDetailResponse.model_validate(tender_dict)
     if tender.result:
         data.result = {
             "winner": tender.result.winner_name,

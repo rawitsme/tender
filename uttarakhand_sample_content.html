@@ -1,0 +1,38 @@
+
+<html>
+<head>
+<meta http-equiv="content" content="no-cache" />
+<meta http-equiv="Content-Type" content="text/html;charset=UTF-8" />
+<title>Stale Session</title>
+<script type="text/javascript">djConfig = {"baseRelativePath":"/nicgep/app?service=asset&path=%2Fgep%2F","parseWidgets":false} </script>
+
+<script type="text/javascript" src="/nicgep/app?service=asset&path=%2Fgep%2Fgep.js"></script>
+<script type="text/javascript">
+dojo.registerModulePath("tapestry", "/nicgep/app?service=asset&path=%2Ftapestry%2F");
+</script>
+<script type="text/javascript" src="/nicgep/app?service=asset&path=%2Ftapestry%2Fcore.js"></script>
+<script type="text/javascript">
+dojo.require("tapestry.namespace");
+tapestry.requestEncoding='UTF-8';
+</script>
+<link rel="stylesheet" type="text/css" href="/nicgep/app?service=asset&amp;path=%2Forg%2Fapache%2Ftapestry%2Fpages%2FException.css" />
+</head>
+
+<body>
+<span class="exception-top">
+Your session has timed out.
+</span>
+
+<p>Web applications store information about what you are doing on the server.  This information
+is called the <em>session</em>.</p>
+
+<p>Web servers must track many, many sessions.  If you
+are inactive for a long enough time (usually, a few minutes), this information is discarded to
+make room for active users.</p>
+
+<p>At this point you may <b>
+<a id="restart" href="/nicgep/app?service=restart">restart</a></b> the session to continue.</p>
+
+</body>
+</html>
+

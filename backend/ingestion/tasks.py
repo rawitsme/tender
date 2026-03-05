@@ -157,11 +157,11 @@ async def _run_connector_async(source: str) -> dict:
                                 :prebid_date, :prebid_venue,
                                 :contact_person, :contact_email, :contact_phone,
                                 :eligibility,
-                                'active', :raw_text, :fingerprint, :quality
+                                'ACTIVE', :raw_text, :fingerprint, :quality
                             ) RETURNING id
                         """),
                         {
-                            "source": source,
+                            "source": source.upper(),
                             "source_url": raw.source_url,
                             "source_id": raw.source_id,
                             "tender_id": raw.tender_id,
@@ -171,7 +171,7 @@ async def _run_connector_async(source: str) -> dict:
                             "organization": raw.organization,
                             "state": normalize_state(raw.state),
                             "category": raw.category,
-                            "tender_type": raw.tender_type or "open_tender",
+                            "tender_type": (raw.tender_type or "open_tender").upper(),
                             "tender_value": raw.tender_value,
                             "emd": raw.emd_amount,
                             "doc_fee": raw.document_fee,
