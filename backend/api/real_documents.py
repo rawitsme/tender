@@ -349,6 +349,47 @@ async def gem_download_batch(
     }
 
 
+@router.get("/gem/detailed-summary/{bid_id}")
+async def get_gem_detailed_summary(bid_id: str):
+    """Generate detailed summary from downloaded GeM documents."""
+    result = get_downloaded_gem_document(bid_id)
+    if not result or not result.get("success"):
+        raise HTTPException(status_code=404, detail="Documents not downloaded yet.")
+
+    tender_dir = result.get("files_dir")
+    if not tender_dir or not Path(tender_dir).exists():
+        tender_dir = str(GEM_STORAGE_BASE / str(bid_id))
+
+    # Use bid_details from GeM metadata as portal_details
+    portal_details = {}
+    bid_details = result.get("bid_details", {})
+    if bid_details:
+        portal_details = {
+            "Bid Number": bid_details.get("bid_number", ""),
+            "Parent Bid Number": bid_details.get("parent_bid_number", ""),
+            "Category": bid_details.get("category", ""),
+            "Department": bid_details.get("department", ""),
+            "Ministry": bid_details.get("ministry", ""),
+            "Start Date": bid_details.get("start_date", ""),
+            "End Date": bid_details.get("end_date", ""),
+            "Total Quantity": str(bid_details.get("quantity", "")),
+        }
+
+    summary = await asyncio.to_thread(
+        generate_detailed_summary, tender_dir, portal_details
+    )
+
+    if summary.get("error"):
+        raise HTTPException(status_code=500, detail=summary["error"])
+
+    return {
+        "tender_id": bid_id,
+        "portal": "gem",
+        "summary": summary,
+        "bid_details": bid_details,
+    }
+
+
 @router.get("/gem/file/{bid_id}/{filename}")
 async def serve_gem_document(bid_id: str, filename: str):
     """Serve a downloaded GeM document file."""

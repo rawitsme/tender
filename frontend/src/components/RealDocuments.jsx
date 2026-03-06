@@ -125,8 +125,11 @@ const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
     try {
       setSummaryLoading(true);
       setSummaryError(null);
-      const sourceId = tender?.tender_id || tender?.source_id || tenderId;
-      const resp = await api.get(`/real-docs/detailed-summary/${encodeURIComponent(sourceId)}?portal=${portal}`);
+      const sourceId = getSourceId();
+      const summaryUrl = isGem
+        ? `/real-docs/gem/detailed-summary/${encodeURIComponent(sourceId)}`
+        : `/real-docs/detailed-summary/${encodeURIComponent(sourceId)}?portal=${portal}`;
+      const resp = await api.get(summaryUrl);
       setDetailedSummary(resp.data.summary);
       setSummaryExpanded(true);
     } catch (err) {
