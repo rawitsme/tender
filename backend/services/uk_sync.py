@@ -490,4 +490,13 @@ async def run_sync() -> Dict:
         f"{summary['errors']} errors"
     )
 
+    # Run alert matcher after sync
+    try:
+        from backend.services.alert_matcher import run_alert_matcher
+        alert_result = await run_alert_matcher(since_minutes=180)
+        summary["alerts_created"] = alert_result.get("alerts_created", 0)
+        logger.info(f"[UK-Sync] Alert matcher: {alert_result.get('alerts_created', 0)} alerts created")
+    except Exception as e:
+        logger.error(f"[UK-Sync] Alert matcher failed: {e}")
+
     return summary
