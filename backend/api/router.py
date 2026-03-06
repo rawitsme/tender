@@ -15,6 +15,7 @@ from backend.api.tender_analysis import router as tender_analysis_router
 from backend.api.health import router as health_router
 from backend.api.download_center import router as download_center_router
 from backend.api.sync import router as sync_router
+from backend.api.archive import router as archive_router
 
 api_router = APIRouter()
 
@@ -32,3 +33,4 @@ api_router.include_router(tender_analysis_router, tags=["Tender Analysis"])
 api_router.include_router(health_router, tags=["Health"])
 api_router.include_router(download_center_router)
 api_router.include_router(sync_router, prefix="/sync", tags=["Sync"])
+api_router.include_router(archive_router)

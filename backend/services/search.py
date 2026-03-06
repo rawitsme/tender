@@ -58,12 +58,22 @@ async def search_tenders(
     page_size: int = 20,
     sort_by: str = "publication_date",
     sort_order: str = "desc",
+    include_archived: Optional[bool] = None,
+    archived_only: bool = False,
 ) -> Tuple[List[Tender], int]:
     """Full-text search with filters. Returns (tenders, total_count)."""
 
     conditions = []
     use_fts = False
     ts_query_expr = None
+
+    # Archive filter
+    if archived_only:
+        conditions.append(Tender.is_archived == True)
+    elif include_archived is None or include_archived is False:
+        # Default: exclude archived tenders
+        conditions.append(Tender.is_archived == False)
+    # else include_archived=True → no filter, show all
 
     # Full-text search
     if query:

@@ -457,6 +457,19 @@ async def run_sync() -> Dict:
     async with async_session() as db:
         summary = await sync_tenders_to_db(db, scraped)
 
+        # Auto-archive expired tenders
+        from sqlalchemy import text as sa_text
+        r1 = await db.execute(sa_text(
+            "UPDATE tenders SET is_archived = true "
+            "WHERE status IN ('CLOSED','CANCELLED','AWARDED') AND is_archived = false"
+        ))
+        r2 = await db.execute(sa_text(
+            "UPDATE tenders SET is_archived = true, status = 'CLOSED' "
+            "WHERE bid_close_date < NOW() AND status = 'ACTIVE' AND is_archived = false"
+        ))
+        await db.commit()
+        summary["auto_archived"] = r1.rowcount + r2.rowcount
+
     duration = (datetime.now() - start).total_seconds()
     summary["success"] = True
     summary["scraped_count"] = len(scraped)

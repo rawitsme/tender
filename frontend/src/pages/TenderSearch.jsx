@@ -14,9 +14,8 @@ const SORT_OPTIONS = [
 ]
 
 const TABS = [
-  { label: 'Active', value: 'ACTIVE' },
-  { label: 'Closed', value: 'CLOSED' },
-  { label: 'All', value: null },
+  { label: 'Active', value: 'ACTIVE', archived: false },
+  { label: 'All (incl. Archived)', value: null, archived: true },
 ]
 
 const SUGGESTED_KEYWORDS = [
@@ -68,6 +67,7 @@ export default function TenderSearch() {
       query: fullQuery || undefined,
       ...filters,
       status: tab ? [tab.toLowerCase()] : undefined,
+      include_archived: TABS.find(t => t.value === tab)?.archived ?? false,
       page,
       page_size: 20,
       sort_by: sortBy,

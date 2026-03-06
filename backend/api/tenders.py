@@ -47,6 +47,7 @@ async def search(req: TenderSearchRequest, db: AsyncSession = Depends(get_db)):
         page_size=req.page_size,
         sort_by=req.sort_by,
         sort_order=req.sort_order,
+        include_archived=req.include_archived,
     )
     return TenderListResponse(
         tenders=[TenderResponse.model_validate(t) for t in tenders],

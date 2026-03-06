@@ -85,6 +85,7 @@ class TenderSearchRequest(BaseModel):
     page_size: int = Field(default=20, ge=1, le=100)
     sort_by: str = "publication_date"
     sort_order: str = "desc"
+    include_archived: Optional[bool] = None  # None/False=exclude, True=include all
 
 
 class BOQItemResponse(BaseModel):

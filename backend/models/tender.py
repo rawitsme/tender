@@ -112,6 +112,9 @@ class Tender(Base):
         default='bidding'
     )
     
+    # Archive flag – closed/expired tenders get archived but remain searchable
+    is_archived = Column(Boolean, default=False, nullable=False, server_default=text("false"), index=True)
+
     # Full-text search vector
     search_vector = Column(TSVECTOR)
     

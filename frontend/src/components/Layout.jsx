@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Outlet, NavLink } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { LayoutDashboard, Search, Bell, Shield, LogOut, Compass, Bookmark, Menu, X, GitCompare, Download } from 'lucide-react'
+import { LayoutDashboard, Search, Bell, Shield, LogOut, Compass, Bookmark, Menu, X, GitCompare, Download, Archive } from 'lucide-react'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/search', icon: Search, label: 'Search Tenders' },
   { to: '/browse', icon: Compass, label: 'Browse' },
   { to: '/download', icon: Download, label: 'Download Center' },
+  { to: '/archive', icon: Archive, label: 'Archived' },
   { to: '/bookmarks', icon: Bookmark, label: 'Bookmarks' },
   { to: '/alerts', icon: Bell, label: 'Alerts' },
   { to: '/admin', icon: Shield, label: 'Admin' },
