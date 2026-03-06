@@ -41,7 +41,7 @@ def _solve_with_2captcha(image_data: bytes, api_key: str) -> Optional[str]:
     try:
         from twocaptcha import TwoCaptcha
 
-        solver = TwoCaptcha(api_key)
+        solver = TwoCaptcha(api_key, defaultTimeout=60, pollingInterval=5)
 
         # Save to temp file (2captcha SDK needs file path)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
