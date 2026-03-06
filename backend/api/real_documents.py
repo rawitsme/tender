@@ -17,6 +17,12 @@ from backend.services.uk_downloader import (
     get_tender_summary,
     STORAGE_BASE,
 )
+from backend.services.gem_downloader import (
+    download_gem_document,
+    download_gem_documents_batch,
+    get_downloaded_gem_document,
+    STORAGE_BASE as GEM_STORAGE_BASE,
+)
 from backend.services.tender_summary import generate_detailed_summary
 
 router = APIRouter()
@@ -237,3 +243,126 @@ async def get_detailed_summary(tender_id: str, portal: str = "uttarakhand"):
         "portal": portal,
         "summary": summary,
     }
+
+
+# ─── GeM Document Endpoints ───
+
+
+@router.get("/gem/status/{bid_id}")
+async def check_gem_document_status(bid_id: str):
+    """Check if document already downloaded for a GeM bid."""
+    result = get_downloaded_gem_document(bid_id)
+    if result and result.get("success"):
+        return {"status": "downloaded", "documents": result["documents"]}
+    if bid_id in _active_downloads:
+        state = _active_downloads[bid_id]
+        if state == "downloading":
+            return {"status": "downloading"}
+    return {"status": "not_downloaded"}
+
+
+@router.post("/gem/download/{bid_id}")
+async def start_gem_download(
+    bid_id: str,
+    background_tasks: BackgroundTasks,
+    bid_number: str = "",
+    title: str = "",
+):
+    """Start downloading document for a GeM bid (background)."""
+    existing = get_downloaded_gem_document(bid_id)
+    if existing and existing.get("success"):
+        return {"status": "already_downloaded", "documents": existing["documents"]}
+
+    if bid_id in _active_downloads:
+        return {"status": "already_downloading"}
+
+    _active_downloads[bid_id] = "downloading"
+
+    def do_download():
+        try:
+            result = download_gem_document(bid_id, bid_number, title)
+            if result["success"]:
+                _active_downloads[bid_id] = "done"
+            else:
+                _active_downloads[bid_id] = f"failed: {'; '.join(result.get('errors', ['unknown']))}"
+        except Exception as e:
+            _active_downloads[bid_id] = f"error: {e}"
+
+    background_tasks.add_task(asyncio.to_thread, do_download)
+    return {"status": "started", "message": f"Downloading GeM document for bid {bid_id}..."}
+
+
+@router.get("/gem/download-sync/{bid_id}")
+async def gem_download_sync(bid_id: str, bid_number: str = "", title: str = ""):
+    """Download GeM document synchronously (blocking, for testing)."""
+    existing = get_downloaded_gem_document(bid_id)
+    if existing and existing.get("success"):
+        return {"status": "already_downloaded", "documents": existing["documents"]}
+
+    result = await asyncio.to_thread(download_gem_document, bid_id, bid_number, title)
+    if result["success"]:
+        return {"status": "downloaded", "documents": result["documents"]}
+    else:
+        raise HTTPException(status_code=500, detail={"errors": result["errors"]})
+
+
+@router.post("/gem/download-batch")
+async def gem_download_batch(
+    background_tasks: BackgroundTasks,
+    limit: int = 10,
+):
+    """Download documents for multiple GeM bids from DB (background)."""
+    from backend.database import async_session
+    from sqlalchemy import text as sql_text
+
+    # Get GEM bids that don't have documents yet
+    async with async_session() as db:
+        rows = await db.execute(sql_text(
+            "SELECT source_id, tender_id, title FROM tenders "
+            "WHERE source = 'GEM' AND status = 'ACTIVE' "
+            "ORDER BY created_at DESC LIMIT :lim"
+        ), {"lim": limit})
+        bids = [{"bid_id": r[0], "bid_number": r[1], "title": r[2]} for r in rows.fetchall()]
+
+    if not bids:
+        return {"status": "no_bids", "message": "No GEM bids found"}
+
+    # Filter out already downloaded
+    to_download = []
+    for b in bids:
+        existing = get_downloaded_gem_document(b["bid_id"])
+        if not existing or not existing.get("success"):
+            to_download.append(b)
+
+    if not to_download:
+        return {"status": "all_downloaded", "total": len(bids)}
+
+    def do_batch():
+        return download_gem_documents_batch(to_download)
+
+    background_tasks.add_task(asyncio.to_thread, do_batch)
+    return {
+        "status": "started",
+        "total": len(bids),
+        "to_download": len(to_download),
+        "already_done": len(bids) - len(to_download),
+    }
+
+
+@router.get("/gem/file/{bid_id}/{filename}")
+async def serve_gem_document(bid_id: str, filename: str):
+    """Serve a downloaded GeM document file."""
+    file_path = GEM_STORAGE_BASE / str(bid_id) / filename
+    if file_path.exists():
+        ext = file_path.suffix.lower()
+        media_types = {
+            ".pdf": "application/pdf",
+            ".xls": "application/vnd.ms-excel",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        return FileResponse(
+            path=str(file_path),
+            filename=filename,
+            media_type=media_types.get(ext, "application/octet-stream"),
+        )
+    raise HTTPException(status_code=404, detail=f"Document not found: {filename}")
