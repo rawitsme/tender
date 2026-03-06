@@ -63,7 +63,7 @@ async def delete_saved_search(
     return {"status": "deleted"}
 
 
-@router.get("/", response_model=List[AlertResponse])
+@router.get("", response_model=List[AlertResponse])
 async def list_alerts(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
