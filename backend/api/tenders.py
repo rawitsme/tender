@@ -189,18 +189,18 @@ async def popular_keywords(db: AsyncSession = Depends(get_db)):
         return cached
     
     keywords = [
-        ("Construction", "construction building civil"),
+        ("Construction", "construction building civil masonry"),
         ("Road", "road highway nhai bridge flyover"),
-        ("Water", "water supply pipeline sewerage drainage"),
-        ("IT & Software", "software computer it hardware network"),
-        ("Medical", "medical hospital health pharmaceutical equipment"),
-        ("Railway", "railway rail ireps station"),
-        ("Electrical", "electrical transformer power solar energy"),
-        ("Education", "school college university education training"),
-        ("Agriculture", "agriculture irrigation farming seed fertilizer"),
-        ("Security", "security cctv surveillance guard patrol"),
-        ("Transport", "transport vehicle bus fleet logistics"),
-        ("Printing", "printing stationery paper office supply"),
+        ("Water", "water pipeline sewerage drainage"),
+        ("IT & Software", "software computer hardware network"),
+        ("Medical", "medical hospital pharmaceutical"),
+        ("Railway", "railway rail ireps"),
+        ("Electrical", "electrical transformer solar energy"),
+        ("Education", "school college university"),
+        ("Agriculture", "agriculture irrigation farming fertilizer"),
+        ("Security", "security cctv surveillance guard"),
+        ("Transport", "transport vehicle bus fleet"),
+        ("Printing", "printing stationery paper"),
     ]
     
     results = []
