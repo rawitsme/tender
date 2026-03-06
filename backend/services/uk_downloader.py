@@ -1,12 +1,14 @@
 """
-Uttarakhand (NIC eProcurement) Tender Document Downloader.
+Uttarakhand (NIC eProcurement) Tender Document Downloader — HTTP-only version.
+
+Uses httpx + BeautifulSoup + 2Captcha. No Selenium/Chrome needed.
 
 Proven workflow:
-1. Navigate to active tenders, solve CAPTCHA
-2. Find tender by ID in listing
+1. GET active tenders page → solve CAPTCHA → search by Tender ID
+2. Follow DirectLink to detail page
 3. Click "Download as zip" → CAPTCHA page
-4. Solve CAPTCHA → session gets authorized
-5. Click "Download as zip" AGAIN → file downloads
+4. Solve CAPTCHA (must include Submit=Submit in POST) → session authorized
+5. Re-load detail → click "Download as zip" again → file streams back
 
 Works for all NIC eProcurement portals (UK, UP, Maharashtra, Haryana, MP).
 """
@@ -14,21 +16,14 @@ Works for all NIC eProcurement portals (UK, UP, Maharashtra, Haryana, MP).
 import base64
 import json
 import logging
-import os
-import signal
-import sys
-import threading
-import time
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+import httpx
+from bs4 import BeautifulSoup
 
+import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from backend.ingestion.connectors.captcha_solver import solve_captcha_image
 
@@ -45,247 +40,123 @@ NIC_PORTALS = {
 
 STORAGE_BASE = Path("storage/documents/tender_downloads")
 
-
-def _make_driver(download_dir: str) -> webdriver.Chrome:
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1400,1024")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--disable-extensions")
-    opts.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-    prefs = {
-        "download.default_directory": download_dir,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-    }
-    opts.add_experimental_option("prefs", prefs)
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
-    # Timeouts: prevent infinite hangs
-    driver.set_page_load_timeout(30)
-    driver.implicitly_wait(5)
-    driver.execute_cdp_cmd("Browser.setDownloadBehavior", {
-        "behavior": "allow", "downloadPath": download_dir, "eventsEnabled": True
-    })
-    return driver
+# Timeouts
+HTTP_TIMEOUT = 60  # seconds per request
+MAX_CAPTCHA_ATTEMPTS = 6
 
 
-def _get_captcha_bytes(driver) -> Optional[bytes]:
+def _make_client() -> httpx.Client:
+    return httpx.Client(
+        follow_redirects=True,
+        timeout=HTTP_TIMEOUT,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        },
+    )
+
+
+def _get_captcha_bytes(soup: BeautifulSoup) -> Optional[bytes]:
+    """Extract CAPTCHA image bytes from page."""
+    el = soup.find(id="captchaImage")
+    if not el:
+        return None
+    src = el.get("src", "")
+    if not src or "," not in src:
+        return None
+    b64 = src.split(",", 1)[1].replace("%0A", "").replace("\n", "").replace(" ", "")
+    if len(b64) % 4:
+        b64 += "=" * (4 - len(b64) % 4)
     try:
-        el = driver.find_element(By.ID, "captchaImage")
-        src = el.get_attribute("src")
-        if src and src.startswith("data:"):
-            b64 = src.split(",", 1)[1].replace("%0A", "").replace("\n", "").replace(" ", "")
-            b64 += "=" * (4 - len(b64) % 4) if len(b64) % 4 else ""
-            return base64.b64decode(b64)
-        return el.screenshot_as_png
-    except:
+        return base64.b64decode(b64)
+    except Exception:
         return None
 
 
-def _solve_captcha(driver, btn_name="Search", max_tries=5) -> bool:
-    for i in range(max_tries):
-        cb = _get_captcha_bytes(driver)
-        if not cb:
-            try:
-                driver.find_element(By.ID, "captcha").click()
-                time.sleep(2)
-            except:
-                driver.refresh()
-                time.sleep(2)
-            continue
-        sol = solve_captcha_image(cb)
-        if not sol:
-            continue
-        logger.info(f"CAPTCHA attempt {i + 1}: '{sol}'")
-        driver.find_element(By.NAME, "captchaText").clear()
-        driver.find_element(By.NAME, "captchaText").send_keys(sol)
-        for name in [btn_name, "Search", "Submit"]:
-            try:
-                driver.find_element(By.NAME, name).click()
-                break
-            except:
-                pass
-        time.sleep(2)
-        # Dismiss JS alert if present
-        try:
-            alert = driver.switch_to.alert
-            logger.info(f"CAPTCHA rejected (alert): {alert.text}")
-            alert.accept()
-            time.sleep(1)
-            continue
-        except:
-            pass
-        ps = driver.page_source
-        if "Invalid Captcha" in ps:
-            continue
-        return True
-    return False
+def _get_form_data(soup: BeautifulSoup) -> Optional[Dict[str, str]]:
+    """Extract all form fields (hidden + text + submit) from first form."""
+    form = soup.find("form", {"action": "/nicgep/app"})
+    if not form:
+        return None
+    data = {}
+    for inp in form.find_all("input"):
+        name = inp.get("name")
+        if name and inp.get("type") not in ("radio",):
+            data[name] = inp.get("value", "")
+    # Default radio "size" to 0 if present
+    radios = form.find_all("input", {"type": "radio", "name": "size"})
+    if radios:
+        data["size"] = "0"
+    return data
 
 
-def _find_tender(driver, tender_id: str, max_pages=5):
-    """Find tender in listing table. Uses Tender ID search first (fast), 
-    then falls back to limited pagination."""
-    search_used = False
+def _solve_captcha_and_post(
+    client: httpx.Client,
+    base_url: str,
+    soup: BeautifulSoup,
+    extra_data: Optional[Dict] = None,
+    submit_name: str = "Search",
+    max_attempts: int = MAX_CAPTCHA_ATTEMPTS,
+) -> Optional[Tuple[BeautifulSoup, httpx.Response]]:
+    """Solve CAPTCHA on current page and submit form.
     
-    # Strategy 1: Use the portal's Tender ID search box
-    try:
-        tid_input = None
-        for name in ["TenderId", "tenderId", "tender_id"]:
-            elems = driver.find_elements(By.NAME, name)
-            if elems:
-                tid_input = elems[0]
-                break
-        if tid_input:
-            logger.info(f"Using Tender ID search for: {tender_id}")
-            tid_input.clear()
-            tid_input.send_keys(tender_id)
-            # Need to re-solve CAPTCHA for search
-            if not _solve_captcha(driver, "Search"):
-                logger.warning("Search CAPTCHA failed, will try pagination")
-            else:
-                search_used = True
-                time.sleep(3)
-                try:
-                    driver.switch_to.alert.accept()
-                    time.sleep(1)
-                except:
-                    pass
-                logger.info("Tender ID search submitted")
-                # Save search results page for debugging
-                try:
-                    debug_path = STORAGE_BASE / "debug_search.html"
-                    with open(debug_path, "w", encoding="utf-8") as df:
-                        df.write(driver.page_source)
-                    logger.info(f"Saved search results HTML to {debug_path}")
-                except:
-                    pass
-    except Exception as e:
-        logger.warning(f"Tender ID search failed: {e}")
-
-    # Strategy 1.5: Quick check — search the page source for the tender ID link
-    # NIC portals put tender ID in text like [2026_UAAN1_92208_1] near DirectLink anchors
-    if search_used:
-        try:
-            # Find all DirectLink anchors — these are the tender title links
-            direct_links = driver.find_elements(By.ID, "DirectLink")
-            if not direct_links:
-                direct_links = driver.find_elements(By.CSS_SELECTOR, "a[title='View Tender Information']")
-            logger.info(f"Found {len(direct_links)} DirectLink anchor(s) after search")
-            
-            # If search returned results, the tender ID appears in nearby text
-            # Just check page source for the ID and grab the first DirectLink
-            if tender_id in driver.page_source and direct_links:
-                logger.info(f"Tender {tender_id} found in page source — using first DirectLink")
-                return direct_links[0]
-        except Exception as e:
-            logger.warning(f"Quick DirectLink search failed: {e}")
-
-    # Strategy 2: Scan results (search narrows to 1 page, pagination as fallback)
-    pages_to_scan = 2 if search_used else max_pages
-    for page in range(1, pages_to_scan + 1):
-        try:
-            table = driver.find_element(By.ID, "table")
-        except:
-            tables = driver.find_elements(By.CSS_SELECTOR, "table.list_table")
-            table = tables[0] if tables else None
-        if not table:
-            logger.warning(f"No table found on page {page}")
+    Returns (result_soup, response) or None if all attempts fail.
+    """
+    for i in range(max_attempts):
+        captcha_bytes = _get_captcha_bytes(soup)
+        if not captcha_bytes:
+            logger.warning(f"No CAPTCHA image on attempt {i + 1}")
             return None
-        rows = table.find_elements(By.TAG_NAME, "tr")
-        logger.info(f"Page {page}: found {len(rows)} rows in table")
-        for row_idx, row in enumerate(rows):
-            cells = row.find_elements(By.TAG_NAME, "td")
-            if len(cells) < 3:
-                continue
-            # Only read first few cells to avoid slow element access
-            try:
-                cell_texts = [cells[i].text for i in range(min(4, len(cells)))]
-                row_text = " ".join(cell_texts)
-            except Exception:
-                continue
-            if row_idx < 3:
-                logger.info(f"  Row {row_idx}: {row_text[:120]}")
-            if tender_id in row_text:
-                links = row.find_elements(By.TAG_NAME, "a")
-                for lnk in links:
-                    if len(lnk.text.strip()) > 10:
-                        return lnk
-                if links:
-                    return links[0]
-        # Only paginate if we didn't use search
-        if page < pages_to_scan:
-            try:
-                nxt = driver.find_elements(By.LINK_TEXT, "Next >") or driver.find_elements(By.PARTIAL_LINK_TEXT, "Next")
-                if not nxt:
-                    break
-                nxt[0].click()
-                time.sleep(3)
-            except:
-                break
+
+        solution = solve_captcha_image(captcha_bytes)
+        if not solution:
+            logger.warning(f"2Captcha returned nothing on attempt {i + 1}")
+            # Reload page to get fresh captcha
+            continue
+
+        logger.info(f"CAPTCHA attempt {i + 1}/{max_attempts}: '{solution}'")
+
+        data = _get_form_data(soup)
+        if not data:
+            logger.error("No form found on page")
+            return None
+
+        data["captchaText"] = solution
+        data["submitname"] = submit_name
+
+        # Tapestry framework requires submit button name=value in POST data
+        if submit_name in data or any(
+            inp.get("name") == submit_name
+            for inp in soup.find_all("input", {"type": "submit"})
+        ):
+            data[submit_name] = submit_name
+
+        if extra_data:
+            data.update(extra_data)
+
+        r = client.post(f"{base_url}/nicgep/app", data=data)
+
+        # Check for explicit rejection
+        if "Invalid Captcha" in r.text or "invalidcaptcha" in r.text.lower():
+            logger.info(f"CAPTCHA rejected (attempt {i + 1})")
+            soup = BeautifulSoup(r.text, "html.parser")
+            continue
+
+        # Check for silent rejection (still on same captcha page)
+        result_soup = BeautifulSoup(r.text, "html.parser")
+        page_inp = result_soup.find("input", {"name": "page"})
+        current_page = page_inp.get("value", "") if page_inp else ""
+
+        # For download captcha, check if we left DocDownCaptcha
+        if current_page == "DocDownCaptcha":
+            logger.info(f"Still on captcha page (silent rejection, attempt {i + 1})")
+            soup = result_soup
+            continue
+
+        return result_soup, r
+
+    logger.error(f"All {max_attempts} CAPTCHA attempts failed")
     return None
-
-
-def _extract_details(driver) -> Dict[str, str]:
-    """Extract key-value pairs from detail page."""
-    details = {}
-    for table in driver.find_elements(By.TAG_NAME, "table"):
-        for row in table.find_elements(By.TAG_NAME, "tr"):
-            cells = row.find_elements(By.TAG_NAME, "td")
-            if len(cells) >= 2:
-                k = cells[0].text.strip().rstrip(":")
-                v = cells[1].text.strip()
-                if k and v and len(k) < 100:
-                    details[k] = v
-    return details
-
-
-def _wait_download(dl_dir: Path, timeout=30) -> Optional[Path]:
-    for _ in range(timeout):
-        files = [f for f in dl_dir.glob("*")
-                 if not f.suffix in [".crdownload", ".html", ".py", ".png", ".json"]
-                 and f.stat().st_size > 100]
-        if files:
-            return max(files, key=lambda f: f.stat().st_mtime)
-        time.sleep(1)
-    return None
-
-
-MAX_DOWNLOAD_SECONDS = 300  # Hard timeout: 5 minutes max per download
-
-
-class _DownloadTimeout(Exception):
-    pass
-
-
-def _timeout_handler(signum, frame):
-    raise _DownloadTimeout("Download exceeded time limit")
-
-
-class _DriverKillTimer:
-    """Thread-safe timeout: kills the WebDriver after MAX seconds.
-    Works from any thread (unlike SIGALRM which is main-thread only)."""
-    def __init__(self, seconds, driver_ref):
-        self._expired = threading.Event()
-        def _kill():
-            self._expired.set()
-            drv = driver_ref.get("driver")
-            if drv:
-                logger.error(f"Hard timeout ({seconds}s) — killing Chrome")
-                try:
-                    drv.quit()
-                except:
-                    pass
-        self._timer = threading.Timer(seconds, _kill)
-        self._timer.daemon = True
-    def start(self):
-        self._timer.start()
-    def cancel(self):
-        self._timer.cancel()
-    @property
-    def expired(self):
-        return self._expired.is_set()
 
 
 def download_nic_tender_documents(
@@ -295,7 +166,9 @@ def download_nic_tender_documents(
 ) -> Dict:
     """
     Download all documents for a tender from an NIC eProcurement portal.
-    Hard timeout of 2 minutes. Returns dict with: success, details, documents[], errors[]
+    Pure HTTP — no Selenium/Chrome.
+    
+    Returns dict with: success, details, documents[], errors[]
     """
     portal = NIC_PORTALS.get(portal_key)
     if not portal:
@@ -305,13 +178,6 @@ def download_nic_tender_documents(
     safe_id = tender_id.replace("/", "_").replace("\\", "_")
     tender_dir = STORAGE_BASE / portal_key / safe_id
     tender_dir.mkdir(parents=True, exist_ok=True)
-    dl_dir = tender_dir / "downloads"
-    dl_dir.mkdir(exist_ok=True)
-
-    # Clean old downloads
-    for f in dl_dir.iterdir():
-        if f.is_file():
-            f.unlink()
 
     result = {
         "tender_id": tender_id,
@@ -323,121 +189,146 @@ def download_nic_tender_documents(
         "errors": [],
     }
 
-    driver = None
-    driver_ref = {"driver": None}  # mutable ref for kill timer
-    kill_timer = _DriverKillTimer(MAX_DOWNLOAD_SECONDS, driver_ref)
-    kill_timer.start()
-
+    client = _make_client()
     try:
-        dl_abs = str(dl_dir.resolve())
-        driver = _make_driver(dl_abs)
-        driver_ref["driver"] = driver
+        # ── Step 1: Load active tenders page ──
+        logger.info(f"[{tender_id}] Loading {portal_key} portal...")
+        r = client.get(f"{base_url}/nicgep/app?page=FrontEndLatestActiveTenders&service=page")
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        # Step 1: Navigate to active tenders
-        logger.info(f"Loading {portal_key} portal...")
-        driver.get(base_url + "/nicgep/app?page=FrontEndLatestActiveTenders&service=page")
-        time.sleep(3)
-
-        # Step 2: Solve listing CAPTCHA
-        logger.info("Solving listing CAPTCHA...")
-        if not _solve_captcha(driver, "Search"):
-            result["errors"].append("Listing CAPTCHA failed")
+        # ── Step 2: Solve CAPTCHA + search by Tender ID ──
+        logger.info(f"[{tender_id}] Searching...")
+        search_result = _solve_captcha_and_post(
+            client, base_url, soup,
+            extra_data={"TenderId": tender_id, "size": "0"},
+            submit_name="Search",
+        )
+        if not search_result:
+            result["errors"].append("Search CAPTCHA failed after all attempts")
             return result
 
-        # Step 3: Find tender
-        logger.info(f"Finding tender {tender_id}...")
-        link = _find_tender(driver, tender_id)
-        if not link:
-            result["errors"].append(f"Tender {tender_id} not found in portal")
+        search_soup, search_resp = search_result
+
+        if tender_id not in search_resp.text:
+            result["errors"].append(f"Tender {tender_id} not found in search results")
             return result
 
-        # Step 4: Open detail page
-        logger.info("Opening tender detail page...")
-        try:
-            href = link.get_attribute("href")
-            if href:
-                logger.info(f"Navigating to: {href[:120]}")
-                driver.get(href)
-            else:
-                link.click()
-        except Exception as click_err:
-            logger.warning(f"Click failed ({click_err}), trying JS click")
-            driver.execute_script("arguments[0].click();", link)
-        time.sleep(5)
-        detail_url = driver.current_url
-        logger.info(f"Detail page loaded: {detail_url[:120]}")
+        # ── Step 3: Find and follow detail page link ──
+        detail_href = None
+        for a in search_soup.find_all("a", id="DirectLink"):
+            h = a.get("href", "")
+            if h:
+                detail_href = h if h.startswith("http") else base_url + h
+                break
 
-        # Save detail page HTML (extract details later from saved file, not via slow Selenium)
-        detail_html = driver.page_source
+        if not detail_href:
+            # Fallback: any link with tender details
+            for a in search_soup.find_all("a", title="View Tender Information"):
+                h = a.get("href", "")
+                if h:
+                    detail_href = h if h.startswith("http") else base_url + h
+                    break
+
+        if not detail_href:
+            result["errors"].append("Could not find tender detail link")
+            return result
+
+        logger.info(f"[{tender_id}] Loading detail page...")
+        r_detail = client.get(detail_href)
+        detail_soup = BeautifulSoup(r_detail.text, "html.parser")
+        detail_html = r_detail.text
+
+        # Save detail page HTML
         with open(tender_dir / "detail.html", "w", encoding="utf-8") as f:
             f.write(detail_html)
-        logger.info(f"Saved detail page ({len(detail_html)} chars)")
 
-        # Step 5: Click "Download as zip" → CAPTCHA page
-        logger.info("Looking for 'Download as zip' link...")
-        zip_link = None
-        # Fast: try known ID first
-        zip_links = driver.find_elements(By.ID, "DirectLink_8")
-        if zip_links:
-            zip_link = zip_links[0]
-        else:
-            # Fallback: search by partial link text
-            zip_links = driver.find_elements(By.PARTIAL_LINK_TEXT, "Download as zip")
-            if zip_links:
-                zip_link = zip_links[0]
-        if not zip_link:
+        # ── Step 4: Find "Download as zip" link ──
+        zip_href = None
+        for a in detail_soup.find_all("a"):
+            aid = a.get("id", "")
+            text = a.get_text().strip().lower()
+            if aid == "DirectLink_8" or "download as zip" in text:
+                h = a.get("href", "")
+                if h:
+                    zip_href = h if h.startswith("http") else base_url + h
+                    break
+
+        if not zip_href:
             result["errors"].append("No 'Download as zip' link on detail page")
-            logger.error("No 'Download as zip' link found on detail page")
             return result
 
-        logger.info("Clicking 'Download as zip'...")
-        try:
-            href = zip_link.get_attribute("href")
-            if href:
-                driver.get(href)
-            else:
-                zip_link.click()
-        except:
-            zip_link.click()
-        time.sleep(3)
+        # ── Step 5: Click zip → get CAPTCHA page ──
+        logger.info(f"[{tender_id}] Loading download CAPTCHA page...")
+        r_zip = client.get(zip_href)
+        zip_soup = BeautifulSoup(r_zip.text, "html.parser")
 
-        # Step 6: Solve download CAPTCHA
-        logger.info("Solving download CAPTCHA...")
-        if not _solve_captcha(driver, "Submit"):
-            result["errors"].append("Download CAPTCHA failed")
+        # ── Step 6: Solve download CAPTCHA ──
+        logger.info(f"[{tender_id}] Solving download CAPTCHA...")
+        captcha_result = _solve_captcha_and_post(
+            client, base_url, zip_soup,
+            submit_name="Submit",
+        )
+        if not captcha_result:
+            result["errors"].append("Download CAPTCHA failed after all attempts")
             return result
 
-        logger.info("CAPTCHA solved, session authorized.")
-        time.sleep(2)
+        logger.info(f"[{tender_id}] CAPTCHA solved, session authorized")
 
-        # Step 7: Go back to detail page and click download AGAIN
-        logger.info("Going back to detail page for second download click...")
-        if "FrontEndTenderDetails" not in driver.page_source:
-            driver.get(detail_url)
-            time.sleep(4)
+        # ── Step 7: Re-load detail page + click zip again → file downloads ──
+        logger.info(f"[{tender_id}] Re-loading detail for download...")
+        r_detail2 = client.get(detail_href)
+        detail_soup2 = BeautifulSoup(r_detail2.text, "html.parser")
 
-        zip2 = driver.find_elements(By.ID, "DirectLink_8")
-        if not zip2:
-            zip2 = driver.find_elements(By.PARTIAL_LINK_TEXT, "Download as zip")
-        if zip2:
-            logger.info("Clicking 'Download as zip' (second click)...")
-            zip2[0].click()
+        zip_href2 = None
+        for a in detail_soup2.find_all("a"):
+            aid = a.get("id", "")
+            text = a.get_text().strip().lower()
+            if aid == "DirectLink_8" or "download as zip" in text:
+                h = a.get("href", "")
+                if h:
+                    zip_href2 = h if h.startswith("http") else base_url + h
+                    break
+
+        if not zip_href2:
+            result["errors"].append("Could not find zip link on second visit")
+            return result
+
+        r_download = client.get(zip_href2)
+        content_type = r_download.headers.get("content-type", "")
+        logger.info(
+            f"[{tender_id}] Download response: {r_download.status_code}, "
+            f"type={content_type}, size={len(r_download.content)}"
+        )
+
+        # ── Step 8: Save and extract file ──
+        file_data = r_download.content
+
+        if len(file_data) < 200 and b"<html" in file_data[:500].lower():
+            result["errors"].append("Got HTML instead of file — download session may have expired")
+            return result
+
+        # Determine filename
+        cd = r_download.headers.get("content-disposition", "")
+        if "filename=" in cd:
+            fname = cd.split("filename=")[-1].strip().strip('"')
+        elif file_data[:2] == b"PK":
+            fname = f"{safe_id}.zip"
+        elif file_data[:4] == b"%PDF":
+            fname = f"{safe_id}.pdf"
         else:
-            logger.error("Could not find 'Download as zip' for second click")
+            fname = f"{safe_id}.bin"
 
-        # Wait for download
-        dl_file = _wait_download(dl_dir, timeout=60)
-        if not dl_file:
-            result["errors"].append("Download timed out")
-            return result
+        dl_path = tender_dir / "downloads"
+        dl_path.mkdir(exist_ok=True)
+        file_path = dl_path / fname
+        file_path.write_bytes(file_data)
+        logger.info(f"[{tender_id}] Saved: {fname} ({len(file_data):,} bytes)")
 
-        logger.info(f"Downloaded: {dl_file.name} ({dl_file.stat().st_size:,} bytes)")
-
-        # Extract ZIP
-        if zipfile.is_zipfile(dl_file):
+        # Extract ZIP if applicable
+        if zipfile.is_zipfile(file_path):
             extract_dir = tender_dir / "extracted"
             extract_dir.mkdir(exist_ok=True)
-            with zipfile.ZipFile(dl_file) as zf:
+            with zipfile.ZipFile(file_path) as zf:
                 zf.extractall(extract_dir)
                 for info in zf.infolist():
                     if not info.is_dir():
@@ -448,18 +339,15 @@ def download_nic_tender_documents(
                         })
         else:
             result["documents"].append({
-                "name": dl_file.name,
-                "size": dl_file.stat().st_size,
-                "path": str(dl_file),
+                "name": fname,
+                "size": len(file_data),
+                "path": str(file_path),
             })
 
-        result["success"] = True
-
-        # Extract details from saved HTML (fast, no Selenium)
+        # ── Step 9: Extract details from saved HTML ──
         try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(detail_html, "html.parser")
-            for row in soup.find_all("tr"):
+            detail_parse = BeautifulSoup(detail_html, "html.parser")
+            for row in detail_parse.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) >= 2:
                     k = cells[0].get_text(strip=True).rstrip(":")
@@ -467,33 +355,27 @@ def download_nic_tender_documents(
                     if k and v and len(k) < 100:
                         result["details"][k] = v
         except Exception as e:
-            logger.warning(f"Detail extraction from HTML failed: {e}")
-        
+            logger.warning(f"Detail extraction failed: {e}")
+
+        result["success"] = True
+
         # Save result
         with open(tender_dir / "result.json", "w") as f:
             json.dump(result, f, indent=2, default=str)
 
+        logger.info(f"[{tender_id}] ✅ Download complete: {len(result['documents'])} document(s)")
         return result
 
-    except _DownloadTimeout:
-        logger.error(f"Download timed out after {MAX_DOWNLOAD_SECONDS}s for {tender_id}")
-        result["errors"].append(f"Download timed out after {MAX_DOWNLOAD_SECONDS} seconds")
+    except httpx.TimeoutException as e:
+        logger.error(f"[{tender_id}] HTTP timeout: {e}")
+        result["errors"].append(f"HTTP timeout: {e}")
         return result
     except Exception as e:
-        if kill_timer.expired:
-            logger.error(f"Download timed out after {MAX_DOWNLOAD_SECONDS}s for {tender_id}")
-            result["errors"].append(f"Download timed out after {MAX_DOWNLOAD_SECONDS} seconds")
-        else:
-            logger.error(f"Download failed: {e}")
-            result["errors"].append(str(e))
+        logger.error(f"[{tender_id}] Download failed: {e}", exc_info=True)
+        result["errors"].append(str(e))
         return result
     finally:
-        kill_timer.cancel()
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
+        client.close()
 
 
 def get_downloaded_documents(tender_id: str, portal_key: str = "uttarakhand") -> Optional[Dict]:
