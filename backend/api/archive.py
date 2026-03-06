@@ -37,13 +37,16 @@ async def archive_stats(db: AsyncSession = Depends(get_db)):
 @router.post("/auto")
 async def auto_archive(db: AsyncSession = Depends(get_db)):
     """Auto-archive closed/cancelled/awarded tenders and expired active ones."""
+    # Only archive tenders that are BOTH closed AND past their bid close date
     r1 = await db.execute(text("""
         UPDATE tenders SET is_archived = true
         WHERE status IN ('CLOSED', 'CANCELLED', 'AWARDED')
         AND is_archived = false
+        AND (bid_close_date IS NULL OR bid_close_date < NOW())
     """))
     closed_count = r1.rowcount
 
+    # Expire active tenders past bid close date
     r2 = await db.execute(text("""
         UPDATE tenders SET is_archived = true, status = 'CLOSED'
         WHERE bid_close_date < NOW()

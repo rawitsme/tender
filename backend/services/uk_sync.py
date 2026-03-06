@@ -413,9 +413,15 @@ async def sync_tenders_to_db(db: AsyncSession, scraped: List[Dict]) -> Dict:
                     logger.error(f"[UK-Sync] Insert failed: {e}")
                     summary["errors"] += 1
 
-    # Step: Mark tenders no longer on portal as CLOSED
+    # Step: Mark tenders no longer on portal as CLOSED — but ONLY if bid close date is past
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
     for sid, db_t in existing.items():
         if sid not in active_source_ids and db_t["status"] and db_t["status"].upper() == "ACTIVE":
+            # Don't close tenders whose bid close date is still in the future
+            bcd = db_t.get("bid_close_date")
+            if bcd and bcd > now_utc:
+                continue
             try:
                 await db.execute(sql_text(
                     "UPDATE tenders SET status = 'CLOSED', updated_at = NOW() WHERE id = :tid"
@@ -461,7 +467,8 @@ async def run_sync() -> Dict:
         from sqlalchemy import text as sa_text
         r1 = await db.execute(sa_text(
             "UPDATE tenders SET is_archived = true "
-            "WHERE status IN ('CLOSED','CANCELLED','AWARDED') AND is_archived = false"
+            "WHERE status IN ('CLOSED','CANCELLED','AWARDED') AND is_archived = false "
+            "AND (bid_close_date IS NULL OR bid_close_date < NOW())"
         ))
         r2 = await db.execute(sa_text(
             "UPDATE tenders SET is_archived = true, status = 'CLOSED' "
