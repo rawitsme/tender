@@ -10,6 +10,7 @@ const SOURCE_TO_PORTAL = {
   'MAHARASHTRA': 'maharashtra',
   'HARYANA': 'haryana',
   'MP': 'mp',
+  'GEM': 'gem',
 };
 
 const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
@@ -27,7 +28,20 @@ const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
   const [summaryExpanded, setSummaryExpanded] = useState(true);
 
   const portal = SOURCE_TO_PORTAL[source?.toUpperCase()];
+  const isGem = source?.toUpperCase() === 'GEM';
   const isSupported = !!portal;
+
+  // Build API paths based on source type
+  const getSourceId = () => isGem ? (tender?.source_id || tenderId) : (tender?.tender_id || tender?.source_id || tenderId);
+  const getStatusUrl = (sid) => isGem
+    ? `/real-docs/gem/status/${encodeURIComponent(sid)}`
+    : `/real-docs/status/${encodeURIComponent(sid)}?portal=${portal}`;
+  const getDownloadUrl = (sid) => isGem
+    ? `/real-docs/gem/download/${encodeURIComponent(sid)}?bid_number=${encodeURIComponent(tender?.tender_id || '')}&title=${encodeURIComponent(tenderTitle || '')}`
+    : `/real-docs/download/${encodeURIComponent(sid)}?portal=${portal}&title=${encodeURIComponent(tenderTitle || '')}`;
+  const getFileUrl = (sid, filename) => isGem
+    ? `${api.defaults.baseURL}/real-docs/gem/file/${encodeURIComponent(sid)}/${encodeURIComponent(filename)}`
+    : `${api.defaults.baseURL}/real-docs/file/${encodeURIComponent(sid)}/${encodeURIComponent(filename)}?portal=${portal}`;
 
   useEffect(() => {
     // Remember where the user came from
@@ -42,8 +56,8 @@ const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
   const checkStatus = async () => {
     try {
       setStatus('checking');
-      const sourceId = tender?.tender_id || tender?.source_id || tenderId;
-      const resp = await api.get(`/real-docs/status/${encodeURIComponent(sourceId)}?portal=${portal}`);
+      const sourceId = getSourceId();
+      const resp = await api.get(getStatusUrl(sourceId));
       if (resp.data.status === 'downloaded') {
         setDocuments(resp.data.documents || []);
         setSummary(resp.data.summary);
@@ -63,8 +77,8 @@ const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
     try {
       setStatus('downloading');
       setError(null);
-      const sourceId = tender?.tender_id || tender?.source_id || tenderId;
-      const resp = await api.post(`/real-docs/download/${encodeURIComponent(sourceId)}?portal=${portal}&title=${encodeURIComponent(tenderTitle || '')}`);
+      const sourceId = getSourceId();
+      const resp = await api.post(getDownloadUrl(sourceId));
       
       if (resp.data.status === 'already_downloaded') {
         setDocuments(resp.data.documents || []);
@@ -82,7 +96,7 @@ const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
   const pollStatus = (sourceId) => {
     const interval = setInterval(async () => {
       try {
-        const resp = await api.get(`/real-docs/status/${encodeURIComponent(sourceId)}?portal=${portal}`);
+        const resp = await api.get(getStatusUrl(sourceId));
         if (resp.data.status === 'downloaded') {
           clearInterval(interval);
           setDocuments(resp.data.documents || []);
@@ -151,8 +165,7 @@ const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
           <FileText size={18} /> Tender Documents
         </h3>
         <p className="text-sm text-gray-500">
-          Document download is currently supported for NIC state portals (Uttarakhand, UP, Maharashtra, Haryana, MP).
-          {source === 'GEM' && ' For GEM tenders, documents can be accessed directly from the GeM portal.'}
+          Document download is currently supported for NIC state portals (Uttarakhand, UP, Maharashtra, Haryana, MP) and GeM.
           {source === 'CPPP' && ' For CPPP tenders, documents can be accessed from the Central Public Procurement Portal.'}
         </p>
       </div>
@@ -294,7 +307,7 @@ const RealDocuments = ({ tenderId, tenderTitle, source, tender }) => {
                   </div>
                 </div>
                 <a
-                  href={`${api.defaults.baseURL}/real-docs/file/${encodeURIComponent(tender?.tender_id || tender?.source_id || tenderId)}/${encodeURIComponent(doc.name)}?portal=${portal}`}
+                  href={getFileUrl(getSourceId(), doc.name)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-xs font-medium"
